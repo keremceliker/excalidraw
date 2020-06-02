@@ -123,3 +123,15 @@ Support this project with your organization. Your logo will show up here with a 
 <a href="https://opencollective.com/excalidraw/organization/7/website"><img src="https://opencollective.com/excalidraw/organization/7/avatar.svg"></a>
 <a href="https://opencollective.com/excalidraw/organization/8/website"><img src="https://opencollective.com/excalidraw/organization/8/avatar.svg"></a>
 <a href="https://opencollective.com/excalidraw/organization/9/website"><img src="https://opencollective.com/excalidraw/organization/9/avatar.svg"></a>
+
+## OpenShift
+
+```
+make podman-push
+```
+
+```
+oc new-project excalidraw
+oc new-app --as-deployment-config --docker-image=quay.io/eformat/excalidraw:latest --name=excalidraw
+oc expose svc excalidraw
+```
