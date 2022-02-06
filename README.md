@@ -168,3 +168,17 @@ Pull requests are welcome. For major changes, please [open an issue](https://git
 - [Vercel](https://vercel.com)
 
 And the main source of inspiration for starting the project is the awesome [Zwibbler](https://zwibbler.com/demo/) app.
+
+## OpenShift
+
+```
+make podman-push
+```
+
+```
+oc new-project excalidraw
+oc new-app --as-deployment-config --docker-image=quay.io/eformat/excalidraw:latest --name=excalidraw
+oc expose svc excalidraw
+oc patch route/excalidraw --type=json -p '[{"op":"add", "path":"/spec/tls", "value":{"termination":"edge","insecureEdgeTerminationPolicy":"Redirect"}}]'
+```
+=======
