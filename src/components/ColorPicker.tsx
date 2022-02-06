@@ -1,8 +1,9 @@
 import React from "react";
 import { Popover } from "./Popover";
+import { isTransparent } from "../utils";
 
 import "./ColorPicker.scss";
-import { KEYS } from "../keys";
+import { isArrowKey, KEYS } from "../keys";
 import { t, getLanguage } from "../i18n";
 import { isWritableElement } from "../utils";
 import colors from "../colors";
@@ -14,7 +15,7 @@ const isValidColor = (color: string) => {
 };
 
 const getColor = (color: string): string | null => {
-  if (color === "transparent") {
+  if (isTransparent(color)) {
     return color;
   }
 
@@ -43,6 +44,7 @@ const Picker = ({
   onClose,
   label,
   showInput = true,
+  type,
 }: {
   colors: string[];
   color: string | null;
@@ -50,6 +52,7 @@ const Picker = ({
   onClose: () => void;
   label: string;
   showInput: boolean;
+  type: "canvasBackground" | "elementBackground" | "elementStroke";
 }) => {
   const firstItem = React.useRef<HTMLButtonElement>();
   const activeItem = React.useRef<HTMLButtonElement>();
@@ -57,12 +60,13 @@ const Picker = ({
   const colorInput = React.useRef<HTMLInputElement>();
 
   React.useEffect(() => {
-    // After the component is first mounted
-    // focus on first input
+    // After the component is first mounted focus on first input
     if (activeItem.current) {
       activeItem.current.focus();
     } else if (colorInput.current) {
       colorInput.current.focus();
+    } else if (gallery.current) {
+      gallery.current.focus();
     }
   }, []);
 
@@ -74,18 +78,11 @@ const Picker = ({
           colorInput.current?.focus();
           event.preventDefault();
         }
-      } else {
-        if (activeElement === colorInput.current) {
-          firstItem.current?.focus();
-          event.preventDefault();
-        }
+      } else if (activeElement === colorInput.current) {
+        firstItem.current?.focus();
+        event.preventDefault();
       }
-    } else if (
-      event.key === KEYS.ARROW_RIGHT ||
-      event.key === KEYS.ARROW_LEFT ||
-      event.key === KEYS.ARROW_UP ||
-      event.key === KEYS.ARROW_DOWN
-    ) {
+    } else if (isArrowKey(event.key)) {
       const { activeElement } = document;
       const isRTL = getLanguage().rtl;
       const index = Array.prototype.indexOf.call(
@@ -119,11 +116,12 @@ const Picker = ({
       onClose();
     }
     event.nativeEvent.stopImmediatePropagation();
+    event.stopPropagation();
   };
 
   return (
     <div
-      className="color-picker"
+      className={`color-picker color-picker-type-${type}`}
       role="dialog"
       aria-modal="true"
       aria-label={t("labels.colorPicker")}
@@ -138,37 +136,43 @@ const Picker = ({
             gallery.current = el;
           }
         }}
+        tabIndex={0}
       >
-        {colors.map((_color, i) => (
-          <button
-            className="color-picker-swatch"
-            onClick={(event) => {
-              (event.currentTarget as HTMLButtonElement).focus();
-              onChange(_color);
-            }}
-            title={`${_color} — ${keyBindings[i].toUpperCase()}`}
-            aria-label={_color}
-            aria-keyshortcuts={keyBindings[i]}
-            style={{ color: _color }}
-            key={_color}
-            ref={(el) => {
-              if (el && i === 0) {
-                firstItem.current = el;
-              }
-              if (el && _color === color) {
-                activeItem.current = el;
-              }
-            }}
-            onFocus={() => {
-              onChange(_color);
-            }}
-          >
-            {_color === "transparent" ? (
-              <div className="color-picker-transparent"></div>
-            ) : undefined}
-            <span className="color-picker-keybinding">{keyBindings[i]}</span>
-          </button>
-        ))}
+        {colors.map((_color, i) => {
+          const _colorWithoutHash = _color.replace("#", "");
+          return (
+            <button
+              className="color-picker-swatch"
+              onClick={(event) => {
+                (event.currentTarget as HTMLButtonElement).focus();
+                onChange(_color);
+              }}
+              title={`${t(`colors.${_colorWithoutHash}`)}${
+                !isTransparent(_color) ? ` (${_color})` : ""
+              } — ${keyBindings[i].toUpperCase()}`}
+              aria-label={t(`colors.${_colorWithoutHash}`)}
+              aria-keyshortcuts={keyBindings[i]}
+              style={{ color: _color }}
+              key={_color}
+              ref={(el) => {
+                if (el && i === 0) {
+                  firstItem.current = el;
+                }
+                if (el && _color === color) {
+                  activeItem.current = el;
+                }
+              }}
+              onFocus={() => {
+                onChange(_color);
+              }}
+            >
+              {isTransparent(_color) ? (
+                <div className="color-picker-transparent"></div>
+              ) : undefined}
+              <span className="color-picker-keybinding">{keyBindings[i]}</span>
+            </button>
+          );
+        })}
         {showInput && (
           <ColorInput
             color={color}
@@ -240,13 +244,16 @@ export const ColorPicker = ({
   color,
   onChange,
   label,
+  isActive,
+  setActive,
 }: {
   type: "canvasBackground" | "elementBackground" | "elementStroke";
   color: string | null;
   onChange: (color: string) => void;
   label: string;
+  isActive: boolean;
+  setActive: (active: boolean) => void;
 }) => {
-  const [isActive, setActive] = React.useState(false);
   const pickerButton = React.useRef<HTMLButtonElement>(null);
 
   return (
@@ -255,11 +262,7 @@ export const ColorPicker = ({
         <button
           className="color-picker-label-swatch"
           aria-label={label}
-          style={
-            color
-              ? ({ "--swatch-color": color } as React.CSSProperties)
-              : undefined
-          }
+          style={color ? { "--swatch-color": color } : undefined}
           onClick={() => setActive(!isActive)}
           ref={pickerButton}
         />
@@ -290,6 +293,7 @@ export const ColorPicker = ({
               }}
               label={label}
               showInput={false}
+              type={type}
             />
           </Popover>
         ) : null}

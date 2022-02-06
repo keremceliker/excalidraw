@@ -1,14 +1,14 @@
 import { Action, ActionResult } from "./types";
-import React from "react";
 import { undo, redo } from "../components/icons";
 import { ToolButton } from "../components/ToolButton";
 import { t } from "../i18n";
-import { SceneHistory, HistoryEntry } from "../history";
+import History, { HistoryEntry } from "../history";
 import { ExcalidrawElement } from "../element/types";
 import { AppState } from "../types";
-import { KEYS } from "../keys";
-import { getElementMap } from "../element";
+import { isWindows, KEYS } from "../keys";
 import { newElementWith } from "../element/mutateElement";
+import { fixBindingsAfterDeletion } from "../element/binding";
+import { arrayToMap } from "../utils";
 
 const writeData = (
   prevElements: readonly ExcalidrawElement[],
@@ -27,26 +27,26 @@ const writeData = (
       return { commitToHistory };
     }
 
-    const prevElementMap = getElementMap(prevElements);
+    const prevElementMap = arrayToMap(prevElements);
     const nextElements = data.elements;
-    const nextElementMap = getElementMap(nextElements);
+    const nextElementMap = arrayToMap(nextElements);
 
+    const deletedElements = prevElements.filter(
+      (prevElement) => !nextElementMap.has(prevElement.id),
+    );
     const elements = nextElements
       .map((nextElement) =>
         newElementWith(
-          prevElementMap[nextElement.id] || nextElement,
+          prevElementMap.get(nextElement.id) || nextElement,
           nextElement,
         ),
       )
       .concat(
-        prevElements
-          .filter(
-            (prevElement) => !nextElementMap.hasOwnProperty(prevElement.id),
-          )
-          .map((prevElement) =>
-            newElementWith(prevElement, { isDeleted: true }),
-          ),
+        deletedElements.map((prevElement) =>
+          newElementWith(prevElement, { isDeleted: true }),
+        ),
       );
+    fixBindingsAfterDeletion(elements, deletedElements);
 
     return {
       elements,
@@ -58,22 +58,23 @@ const writeData = (
   return { commitToHistory };
 };
 
-const testUndo = (shift: boolean) => (event: KeyboardEvent) =>
-  event[KEYS.CTRL_OR_CMD] && /z/i.test(event.key) && event.shiftKey === shift;
-
-type ActionCreator = (history: SceneHistory) => Action;
+type ActionCreator = (history: History) => Action;
 
 export const createUndoAction: ActionCreator = (history) => ({
   name: "undo",
   perform: (elements, appState) =>
     writeData(elements, appState, () => history.undoOnce()),
-  keyTest: testUndo(false),
-  PanelComponent: ({ updateData }) => (
+  keyTest: (event) =>
+    event[KEYS.CTRL_OR_CMD] &&
+    event.key.toLowerCase() === KEYS.Z &&
+    !event.shiftKey,
+  PanelComponent: ({ updateData, data }) => (
     <ToolButton
       type="button"
       icon={undo}
       aria-label={t("buttons.undo")}
       onClick={updateData}
+      size={data?.size || "medium"}
     />
   ),
   commitToHistory: () => false,
@@ -83,13 +84,18 @@ export const createRedoAction: ActionCreator = (history) => ({
   name: "redo",
   perform: (elements, appState) =>
     writeData(elements, appState, () => history.redoOnce()),
-  keyTest: testUndo(true),
-  PanelComponent: ({ updateData }) => (
+  keyTest: (event) =>
+    (event[KEYS.CTRL_OR_CMD] &&
+      event.shiftKey &&
+      event.key.toLowerCase() === KEYS.Z) ||
+    (isWindows && event.ctrlKey && !event.shiftKey && event.key === KEYS.Y),
+  PanelComponent: ({ updateData, data }) => (
     <ToolButton
       type="button"
       icon={redo}
       aria-label={t("buttons.redo")}
       onClick={updateData}
+      size={data?.size || "medium"}
     />
   ),
   commitToHistory: () => false,

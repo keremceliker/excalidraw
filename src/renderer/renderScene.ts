@@ -2,25 +2,26 @@ import { RoughCanvas } from "roughjs/bin/canvas";
 import { RoughSVG } from "roughjs/bin/svg";
 import oc from "open-color";
 
-import { FlooredNumber, AppState } from "../types";
+import { AppState, BinaryFiles, Zoom } from "../types";
 import {
   ExcalidrawElement,
   NonDeletedExcalidrawElement,
   ExcalidrawLinearElement,
   NonDeleted,
   GroupId,
+  ExcalidrawBindableElement,
 } from "../element/types";
 import {
   getElementAbsoluteCoords,
   OMIT_SIDES_FOR_MULTIPLE_ELEMENTS,
-  handlerRectanglesFromCoords,
-  handlerRectangles,
+  getTransformHandlesFromCoords,
+  getTransformHandles,
+  getElementBounds,
   getCommonBounds,
-  canResizeMutlipleElements,
 } from "../element";
 
 import { roundRect } from "./roundRect";
-import { SceneState } from "../scene/types";
+import { RenderConfig } from "../scene/types";
 import {
   getScrollBars,
   SCROLLBAR_COLOR,
@@ -29,29 +30,32 @@ import {
 import { getSelectedElements } from "../scene/selection";
 
 import { renderElement, renderElementToSvg } from "./renderElement";
-import colors from "../colors";
-import { isLinearElement } from "../element/typeChecks";
+import { getClientColors } from "../clients";
 import { LinearElementEditor } from "../element/linearElementEditor";
 import {
   isSelectedViaGroup,
   getSelectedGroupIds,
   getElementsInGroup,
 } from "../groups";
+import { maxBindingGap } from "../element/collision";
+import {
+  SuggestedBinding,
+  SuggestedPointBinding,
+  isBindingEnabled,
+} from "../element/binding";
+import {
+  TransformHandles,
+  TransformHandleType,
+} from "../element/transformHandles";
+import { viewportCoordsToSceneCoords, supportsEmoji } from "../utils";
+import { UserIdleState } from "../types";
+import { THEME_FILTER } from "../constants";
+import {
+  EXTERNAL_LINK_IMG,
+  getLinkHandleFromCoords,
+} from "../element/Hyperlink";
 
-type HandlerRectanglesRet = keyof ReturnType<typeof handlerRectangles>;
-
-const colorsForClientId = (clientId: string) => {
-  // Naive way of getting an integer out of the clientId
-  const sum = clientId.split("").reduce((a, str) => a + str.charCodeAt(0), 0);
-
-  // Skip transparent background.
-  const backgrounds = colors.elementBackground.slice(1);
-  const strokes = colors.elementStroke.slice(1);
-  return {
-    background: backgrounds[sum % backgrounds.length],
-    stroke: strokes[sum % strokes.length],
-  };
-};
+const hasEmojiSupport = supportsEmoji();
 
 const strokeRectWithRotation = (
   context: CanvasRenderingContext2D,
@@ -62,64 +66,115 @@ const strokeRectWithRotation = (
   cx: number,
   cy: number,
   angle: number,
-  fill?: boolean,
+  fill: boolean = false,
 ) => {
+  context.save();
   context.translate(cx, cy);
   context.rotate(angle);
   if (fill) {
     context.fillRect(x - cx, y - cy, width, height);
   }
   context.strokeRect(x - cx, y - cy, width, height);
-  context.rotate(-angle);
-  context.translate(-cx, -cy);
+  context.restore();
 };
 
-const strokeCircle = (
+const strokeDiamondWithRotation = (
   context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
+  width: number,
+  height: number,
+  cx: number,
+  cy: number,
+  angle: number,
+) => {
+  context.save();
+  context.translate(cx, cy);
+  context.rotate(angle);
+  context.beginPath();
+  context.moveTo(0, height / 2);
+  context.lineTo(width / 2, 0);
+  context.lineTo(0, -height / 2);
+  context.lineTo(-width / 2, 0);
+  context.closePath();
+  context.stroke();
+  context.restore();
+};
+
+const strokeEllipseWithRotation = (
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  cx: number,
+  cy: number,
+  angle: number,
+) => {
+  context.beginPath();
+  context.ellipse(cx, cy, width / 2, height / 2, angle, 0, Math.PI * 2);
+  context.stroke();
+};
+
+const fillCircle = (
+  context: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radius: number,
+) => {
+  context.beginPath();
+  context.arc(cx, cy, radius, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
+};
+
+const strokeGrid = (
+  context: CanvasRenderingContext2D,
+  gridSize: number,
+  offsetX: number,
+  offsetY: number,
   width: number,
   height: number,
 ) => {
+  context.save();
+  context.strokeStyle = "rgba(0,0,0,0.1)";
   context.beginPath();
-  context.arc(x + width / 2, y + height / 2, width / 2, 0, Math.PI * 2);
-  context.fill();
+  for (let x = offsetX; x < offsetX + width + gridSize * 2; x += gridSize) {
+    context.moveTo(x, offsetY - gridSize);
+    context.lineTo(x, offsetY + height + gridSize * 2);
+  }
+  for (let y = offsetY; y < offsetY + height + gridSize * 2; y += gridSize) {
+    context.moveTo(offsetX - gridSize, y);
+    context.lineTo(offsetX + width + gridSize * 2, y);
+  }
   context.stroke();
+  context.restore();
 };
 
 const renderLinearPointHandles = (
   context: CanvasRenderingContext2D,
   appState: AppState,
-  sceneState: SceneState,
+  renderConfig: RenderConfig,
   element: NonDeleted<ExcalidrawLinearElement>,
 ) => {
-  context.translate(sceneState.scrollX, sceneState.scrollY);
-  const origStrokeStyle = context.strokeStyle;
-  const lineWidth = context.lineWidth;
-  context.lineWidth = 1 / sceneState.zoom;
+  context.save();
+  context.translate(renderConfig.scrollX, renderConfig.scrollY);
+  context.lineWidth = 1 / renderConfig.zoom.value;
 
   LinearElementEditor.getPointsGlobalCoordinates(element).forEach(
     (point, idx) => {
       context.strokeStyle = "red";
       context.setLineDash([]);
       context.fillStyle =
-        appState.editingLinearElement?.activePointIndex === idx
+        appState.editingLinearElement?.selectedPointsIndices?.includes(idx)
           ? "rgba(255, 127, 127, 0.9)"
           : "rgba(255, 255, 255, 0.9)";
       const { POINT_HANDLE_SIZE } = LinearElementEditor;
-      strokeCircle(
+      fillCircle(
         context,
-        point[0] - POINT_HANDLE_SIZE / 2 / sceneState.zoom,
-        point[1] - POINT_HANDLE_SIZE / 2 / sceneState.zoom,
-        POINT_HANDLE_SIZE / sceneState.zoom,
-        POINT_HANDLE_SIZE / sceneState.zoom,
+        point[0],
+        point[1],
+        POINT_HANDLE_SIZE / 2 / renderConfig.zoom.value,
       );
     },
   );
-  context.setLineDash([]);
-  context.lineWidth = lineWidth;
-  context.translate(-sceneState.scrollX, -sceneState.scrollY);
-  context.strokeStyle = origStrokeStyle;
+  context.restore();
 };
 
 export const renderScene = (
@@ -129,87 +184,118 @@ export const renderScene = (
   scale: number,
   rc: RoughCanvas,
   canvas: HTMLCanvasElement,
-  sceneState: SceneState,
-  // extra options, currently passed by export helper
-  {
-    renderScrollbars = true,
-    renderSelection = true,
-    // Whether to employ render optimizations to improve performance.
-    // Should not be turned on for export operations and similar, because it
-    //  doesn't guarantee pixel-perfect output.
-    renderOptimizations = false,
-  }: {
-    renderScrollbars?: boolean;
-    renderSelection?: boolean;
-    renderOptimizations?: boolean;
-  } = {},
+  renderConfig: RenderConfig,
+  // extra options passed to the renderer
 ) => {
-  if (!canvas) {
+  if (canvas === null) {
     return { atLeastOneVisibleElement: false };
   }
 
+  const {
+    renderScrollbars = true,
+    renderSelection = true,
+    renderGrid = true,
+    isExporting,
+  } = renderConfig;
+
   const context = canvas.getContext("2d")!;
+
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.save();
   context.scale(scale, scale);
 
   // When doing calculations based on canvas width we should used normalized one
   const normalizedCanvasWidth = canvas.width / scale;
   const normalizedCanvasHeight = canvas.height / scale;
 
+  if (isExporting && renderConfig.theme === "dark") {
+    context.filter = THEME_FILTER;
+  }
+
   // Paint background
-  if (typeof sceneState.viewBackgroundColor === "string") {
+  if (typeof renderConfig.viewBackgroundColor === "string") {
     const hasTransparence =
-      sceneState.viewBackgroundColor === "transparent" ||
-      sceneState.viewBackgroundColor.length === 5 || // #RGBA
-      sceneState.viewBackgroundColor.length === 9 || // #RRGGBBA
-      /(hsla|rgba)\(/.test(sceneState.viewBackgroundColor);
+      renderConfig.viewBackgroundColor === "transparent" ||
+      renderConfig.viewBackgroundColor.length === 5 || // #RGBA
+      renderConfig.viewBackgroundColor.length === 9 || // #RRGGBBA
+      /(hsla|rgba)\(/.test(renderConfig.viewBackgroundColor);
     if (hasTransparence) {
       context.clearRect(0, 0, normalizedCanvasWidth, normalizedCanvasHeight);
     }
-    const fillStyle = context.fillStyle;
-    context.fillStyle = sceneState.viewBackgroundColor;
+    context.save();
+    context.fillStyle = renderConfig.viewBackgroundColor;
     context.fillRect(0, 0, normalizedCanvasWidth, normalizedCanvasHeight);
-    context.fillStyle = fillStyle;
+    context.restore();
   } else {
     context.clearRect(0, 0, normalizedCanvasWidth, normalizedCanvasHeight);
   }
 
   // Apply zoom
-  const zoomTranslationX = (-normalizedCanvasWidth * (sceneState.zoom - 1)) / 2;
-  const zoomTranslationY =
-    (-normalizedCanvasHeight * (sceneState.zoom - 1)) / 2;
-  context.translate(zoomTranslationX, zoomTranslationY);
-  context.scale(sceneState.zoom, sceneState.zoom);
+  context.save();
+  context.scale(renderConfig.zoom.value, renderConfig.zoom.value);
+
+  // Grid
+  if (renderGrid && appState.gridSize) {
+    strokeGrid(
+      context,
+      appState.gridSize,
+      -Math.ceil(renderConfig.zoom.value / appState.gridSize) *
+        appState.gridSize +
+        (renderConfig.scrollX % appState.gridSize),
+      -Math.ceil(renderConfig.zoom.value / appState.gridSize) *
+        appState.gridSize +
+        (renderConfig.scrollY % appState.gridSize),
+      normalizedCanvasWidth / renderConfig.zoom.value,
+      normalizedCanvasHeight / renderConfig.zoom.value,
+    );
+  }
 
   // Paint visible elements
   const visibleElements = elements.filter((element) =>
-    isVisibleElement(
-      element,
-      normalizedCanvasWidth,
-      normalizedCanvasHeight,
-      sceneState,
-    ),
+    isVisibleElement(element, normalizedCanvasWidth, normalizedCanvasHeight, {
+      zoom: renderConfig.zoom,
+      offsetLeft: appState.offsetLeft,
+      offsetTop: appState.offsetTop,
+      scrollX: renderConfig.scrollX,
+      scrollY: renderConfig.scrollY,
+    }),
   );
 
   visibleElements.forEach((element) => {
-    renderElement(element, rc, context, renderOptimizations, sceneState);
-    if (
-      isLinearElement(element) &&
-      appState.editingLinearElement &&
-      appState.editingLinearElement.elementId === element.id
-    ) {
-      renderLinearPointHandles(context, appState, sceneState, element);
+    try {
+      renderElement(element, rc, context, renderConfig);
+      if (!isExporting) {
+        renderLinkIcon(element, context, appState);
+      }
+    } catch (error: any) {
+      console.error(error);
     }
   });
 
+  if (appState.editingLinearElement) {
+    const element = LinearElementEditor.getElement(
+      appState.editingLinearElement.elementId,
+    );
+    if (element) {
+      renderLinearPointHandles(context, appState, renderConfig, element);
+    }
+  }
+
   // Paint selection element
   if (selectionElement) {
-    renderElement(
-      selectionElement,
-      rc,
-      context,
-      renderOptimizations,
-      sceneState,
-    );
+    try {
+      renderElement(selectionElement, rc, context, renderConfig);
+    } catch (error: any) {
+      console.error(error);
+    }
+  }
+
+  if (isBindingEnabled(appState)) {
+    appState.suggestedBindings
+      .filter((binding) => binding != null)
+      .forEach((suggestedBinding) => {
+        renderBindingHighlight(context, renderConfig, suggestedBinding!);
+      });
   }
 
   // Paint selected elements
@@ -218,8 +304,6 @@ export const renderScene = (
     !appState.multiElement &&
     !appState.editingLinearElement
   ) {
-    context.translate(sceneState.scrollX, sceneState.scrollY);
-
     const selections = elements.reduce((acc, element) => {
       const selectionColors = [];
       // local user
@@ -230,21 +314,19 @@ export const renderScene = (
         selectionColors.push(oc.black);
       }
       // remote users
-      if (sceneState.remoteSelectedElementIds[element.id]) {
+      if (renderConfig.remoteSelectedElementIds[element.id]) {
         selectionColors.push(
-          ...sceneState.remoteSelectedElementIds[element.id].map((socketId) => {
-            const { background } = colorsForClientId(socketId);
-            return background;
-          }),
+          ...renderConfig.remoteSelectedElementIds[element.id].map(
+            (socketId) => {
+              const { background } = getClientColors(socketId, appState);
+              return background;
+            },
+          ),
         );
       }
       if (selectionColors.length) {
-        const [
-          elementX1,
-          elementY1,
-          elementX2,
-          elementY2,
-        ] = getElementAbsoluteCoords(element);
+        const [elementX1, elementY1, elementX2, elementY2] =
+          getElementAbsoluteCoords(element);
         acc.push({
           angle: element.angle,
           elementX1,
@@ -257,11 +339,10 @@ export const renderScene = (
       return acc;
     }, [] as { angle: number; elementX1: number; elementY1: number; elementX2: number; elementY2: number; selectionColors: string[] }[]);
 
-    function addSelectionForGroupId(groupId: GroupId) {
+    const addSelectionForGroupId = (groupId: GroupId) => {
       const groupElements = getElementsInGroup(elements, groupId);
-      const [elementX1, elementY1, elementX2, elementY2] = getCommonBounds(
-        groupElements,
-      );
+      const [elementX1, elementY1, elementX2, elementY2] =
+        getCommonBounds(groupElements);
       selections.push({
         angle: 0,
         elementX1,
@@ -270,7 +351,7 @@ export const renderScene = (
         elementY2,
         selectionColors: [oc.black],
       });
-    }
+    };
 
     for (const groupId of getSelectedGroupIds(appState)) {
       // TODO: support multiplayer selected group IDs
@@ -281,157 +362,71 @@ export const renderScene = (
       addSelectionForGroupId(appState.editingGroupId);
     }
 
-    selections.forEach(
-      ({
-        angle,
-        elementX1,
-        elementY1,
-        elementX2,
-        elementY2,
-        selectionColors,
-      }) => {
-        const elementWidth = elementX2 - elementX1;
-        const elementHeight = elementY2 - elementY1;
-
-        const initialLineDash = context.getLineDash();
-        const lineWidth = context.lineWidth;
-        const lineDashOffset = context.lineDashOffset;
-        const strokeStyle = context.strokeStyle;
-
-        const dashedLinePadding = 4 / sceneState.zoom;
-        const dashWidth = 8 / sceneState.zoom;
-        const spaceWidth = 4 / sceneState.zoom;
-
-        context.lineWidth = 1 / sceneState.zoom;
-
-        const count = selectionColors.length;
-        for (var i = 0; i < count; ++i) {
-          context.strokeStyle = selectionColors[i];
-          context.setLineDash([
-            dashWidth,
-            spaceWidth + (dashWidth + spaceWidth) * (count - 1),
-          ]);
-          context.lineDashOffset = (dashWidth + spaceWidth) * i;
-          strokeRectWithRotation(
-            context,
-            elementX1 - dashedLinePadding,
-            elementY1 - dashedLinePadding,
-            elementWidth + dashedLinePadding * 2,
-            elementHeight + dashedLinePadding * 2,
-            elementX1 + elementWidth / 2,
-            elementY1 + elementHeight / 2,
-            angle,
-          );
-        }
-        context.lineDashOffset = lineDashOffset;
-        context.strokeStyle = strokeStyle;
-        context.lineWidth = lineWidth;
-        context.setLineDash(initialLineDash);
-      },
+    selections.forEach((selection) =>
+      renderSelectionBorder(context, renderConfig, selection),
     );
-    context.translate(-sceneState.scrollX, -sceneState.scrollY);
 
     const locallySelectedElements = getSelectedElements(elements, appState);
 
-    // Paint resize handlers
+    // Paint resize transformHandles
+    context.save();
+    context.translate(renderConfig.scrollX, renderConfig.scrollY);
     if (locallySelectedElements.length === 1) {
-      context.translate(sceneState.scrollX, sceneState.scrollY);
       context.fillStyle = oc.white;
-      const handlers = handlerRectangles(
+      const transformHandles = getTransformHandles(
         locallySelectedElements[0],
-        sceneState.zoom,
+        renderConfig.zoom,
+        "mouse", // when we render we don't know which pointer type so use mouse
       );
-      Object.keys(handlers).forEach((key) => {
-        const handler = handlers[key as HandlerRectanglesRet];
-        if (handler !== undefined) {
-          const lineWidth = context.lineWidth;
-          context.lineWidth = 1 / sceneState.zoom;
-          if (key === "rotation") {
-            strokeCircle(
-              context,
-              handler[0],
-              handler[1],
-              handler[2],
-              handler[3],
-            );
-          } else {
-            strokeRectWithRotation(
-              context,
-              handler[0],
-              handler[1],
-              handler[2],
-              handler[3],
-              handler[0] + handler[2] / 2,
-              handler[1] + handler[3] / 2,
-              locallySelectedElements[0].angle,
-              true, // fill before stroke
-            );
-          }
-          context.lineWidth = lineWidth;
-        }
-      });
-      context.translate(-sceneState.scrollX, -sceneState.scrollY);
-    } else if (locallySelectedElements.length > 1) {
-      if (canResizeMutlipleElements(locallySelectedElements)) {
-        const dashedLinePadding = 4 / sceneState.zoom;
-        context.translate(sceneState.scrollX, sceneState.scrollY);
-        context.fillStyle = oc.white;
-        const [x1, y1, x2, y2] = getCommonBounds(locallySelectedElements);
-        const initialLineDash = context.getLineDash();
-        context.setLineDash([2 / sceneState.zoom]);
-        const lineWidth = context.lineWidth;
-        context.lineWidth = 1 / sceneState.zoom;
-        strokeRectWithRotation(
+      if (!appState.viewModeEnabled) {
+        renderTransformHandles(
           context,
-          x1 - dashedLinePadding,
-          y1 - dashedLinePadding,
-          x2 - x1 + dashedLinePadding * 2,
-          y2 - y1 + dashedLinePadding * 2,
-          (x1 + x2) / 2,
-          (y1 + y2) / 2,
-          0,
+          renderConfig,
+          transformHandles,
+          locallySelectedElements[0].angle,
         );
-        context.lineWidth = lineWidth;
-        context.setLineDash(initialLineDash);
-        const handlers = handlerRectanglesFromCoords(
-          [x1, y1, x2, y2],
-          0,
-          sceneState.zoom,
-          undefined,
-          OMIT_SIDES_FOR_MULTIPLE_ELEMENTS,
-        );
-        Object.keys(handlers).forEach((key) => {
-          const handler = handlers[key as HandlerRectanglesRet];
-          if (handler !== undefined) {
-            const lineWidth = context.lineWidth;
-            context.lineWidth = 1 / sceneState.zoom;
-            strokeRectWithRotation(
-              context,
-              handler[0],
-              handler[1],
-              handler[2],
-              handler[3],
-              handler[0] + handler[2] / 2,
-              handler[1] + handler[3] / 2,
-              0,
-              true, // fill before stroke
-            );
-            context.lineWidth = lineWidth;
-          }
-        });
-        context.translate(-sceneState.scrollX, -sceneState.scrollY);
       }
+    } else if (locallySelectedElements.length > 1 && !appState.isRotating) {
+      const dashedLinePadding = 4 / renderConfig.zoom.value;
+      context.fillStyle = oc.white;
+      const [x1, y1, x2, y2] = getCommonBounds(locallySelectedElements);
+      const initialLineDash = context.getLineDash();
+      context.setLineDash([2 / renderConfig.zoom.value]);
+      const lineWidth = context.lineWidth;
+      context.lineWidth = 1 / renderConfig.zoom.value;
+      strokeRectWithRotation(
+        context,
+        x1 - dashedLinePadding,
+        y1 - dashedLinePadding,
+        x2 - x1 + dashedLinePadding * 2,
+        y2 - y1 + dashedLinePadding * 2,
+        (x1 + x2) / 2,
+        (y1 + y2) / 2,
+        0,
+      );
+      context.lineWidth = lineWidth;
+      context.setLineDash(initialLineDash);
+      const transformHandles = getTransformHandlesFromCoords(
+        [x1, y1, x2, y2],
+        0,
+        renderConfig.zoom,
+        "mouse",
+        OMIT_SIDES_FOR_MULTIPLE_ELEMENTS,
+      );
+      renderTransformHandles(context, renderConfig, transformHandles, 0);
     }
+    context.restore();
   }
 
   // Reset zoom
-  context.scale(1 / sceneState.zoom, 1 / sceneState.zoom);
-  context.translate(-zoomTranslationX, -zoomTranslationY);
+  context.restore();
 
   // Paint remote pointers
-  for (const clientId in sceneState.remotePointerViewportCoords) {
-    let { x, y } = sceneState.remotePointerViewportCoords[clientId];
-    const username = sceneState.remotePointerUsernames[clientId];
+  for (const clientId in renderConfig.remotePointerViewportCoords) {
+    let { x, y } = renderConfig.remotePointerViewportCoords[clientId];
+
+    x -= appState.offsetLeft;
+    y -= appState.offsetTop;
 
     const width = 9;
     const height = 14;
@@ -447,20 +442,20 @@ export const renderScene = (
     y = Math.max(y, 0);
     y = Math.min(y, normalizedCanvasHeight - height);
 
-    const { background, stroke } = colorsForClientId(clientId);
+    const { background, stroke } = getClientColors(clientId, appState);
 
-    const strokeStyle = context.strokeStyle;
-    const fillStyle = context.fillStyle;
-    const globalAlpha = context.globalAlpha;
+    context.save();
     context.strokeStyle = stroke;
     context.fillStyle = background;
-    if (isOutOfBounds) {
-      context.globalAlpha = 0.2;
+
+    const userState = renderConfig.remotePointerUserStates[clientId];
+    if (isOutOfBounds || userState === UserIdleState.AWAY) {
+      context.globalAlpha = 0.48;
     }
 
     if (
-      sceneState.remotePointerButton &&
-      sceneState.remotePointerButton[clientId] === "down"
+      renderConfig.remotePointerButton &&
+      renderConfig.remotePointerButton[clientId] === "down"
     ) {
       context.beginPath();
       context.arc(x, y, 15, 0, 2 * Math.PI, false);
@@ -486,18 +481,32 @@ export const renderScene = (
     context.fill();
     context.stroke();
 
-    if (!isOutOfBounds && username) {
+    const username = renderConfig.remotePointerUsernames[clientId];
+
+    let idleState = "";
+    if (userState === UserIdleState.AWAY) {
+      idleState = hasEmojiSupport ? "⚫️" : ` (${UserIdleState.AWAY})`;
+    } else if (userState === UserIdleState.IDLE) {
+      idleState = hasEmojiSupport ? "💤" : ` (${UserIdleState.IDLE})`;
+    } else if (userState === UserIdleState.ACTIVE) {
+      idleState = hasEmojiSupport ? "🟢" : "";
+    }
+
+    const usernameAndIdleState = `${
+      username ? `${username} ` : ""
+    }${idleState}`;
+
+    if (!isOutOfBounds && usernameAndIdleState) {
       const offsetX = x + width;
       const offsetY = y + height;
       const paddingHorizontal = 4;
       const paddingVertical = 4;
-      const measure = context.measureText(username);
+      const measure = context.measureText(usernameAndIdleState);
       const measureHeight =
         measure.actualBoundingBoxDescent + measure.actualBoundingBoxAscent;
 
       // Border
       context.fillStyle = stroke;
-      context.globalAlpha = globalAlpha;
       context.fillRect(
         offsetX - 1,
         offsetY - 1,
@@ -513,16 +522,15 @@ export const renderScene = (
         measureHeight + 2 * paddingVertical,
       );
       context.fillStyle = oc.white;
+
       context.fillText(
-        username,
+        usernameAndIdleState,
         offsetX + paddingHorizontal,
         offsetY + paddingVertical + measure.actualBoundingBoxAscent,
       );
     }
 
-    context.strokeStyle = strokeStyle;
-    context.fillStyle = fillStyle;
-    context.globalAlpha = globalAlpha;
+    context.restore();
     context.closePath();
   }
 
@@ -533,11 +541,10 @@ export const renderScene = (
       elements,
       normalizedCanvasWidth,
       normalizedCanvasHeight,
-      sceneState,
+      renderConfig,
     );
 
-    const fillStyle = context.fillStyle;
-    const strokeStyle = context.strokeStyle;
+    context.save();
     context.fillStyle = SCROLLBAR_COLOR;
     context.strokeStyle = "rgba(255,255,255,0.8)";
     [scrollBars.horizontal, scrollBars.vertical].forEach((scrollBar) => {
@@ -552,43 +559,282 @@ export const renderScene = (
         );
       }
     });
-    context.fillStyle = fillStyle;
-    context.strokeStyle = strokeStyle;
+    context.restore();
   }
 
-  context.scale(1 / scale, 1 / scale);
-
+  context.restore();
   return { atLeastOneVisibleElement: visibleElements.length > 0, scrollBars };
+};
+
+const renderTransformHandles = (
+  context: CanvasRenderingContext2D,
+  renderConfig: RenderConfig,
+  transformHandles: TransformHandles,
+  angle: number,
+): void => {
+  Object.keys(transformHandles).forEach((key) => {
+    const transformHandle = transformHandles[key as TransformHandleType];
+    if (transformHandle !== undefined) {
+      context.save();
+      context.lineWidth = 1 / renderConfig.zoom.value;
+      if (key === "rotation") {
+        fillCircle(
+          context,
+          transformHandle[0] + transformHandle[2] / 2,
+          transformHandle[1] + transformHandle[3] / 2,
+          transformHandle[2] / 2,
+        );
+      } else {
+        strokeRectWithRotation(
+          context,
+          transformHandle[0],
+          transformHandle[1],
+          transformHandle[2],
+          transformHandle[3],
+          transformHandle[0] + transformHandle[2] / 2,
+          transformHandle[1] + transformHandle[3] / 2,
+          angle,
+          true, // fill before stroke
+        );
+      }
+      context.restore();
+    }
+  });
+};
+
+const renderSelectionBorder = (
+  context: CanvasRenderingContext2D,
+  renderConfig: RenderConfig,
+  elementProperties: {
+    angle: number;
+    elementX1: number;
+    elementY1: number;
+    elementX2: number;
+    elementY2: number;
+    selectionColors: string[];
+  },
+) => {
+  const { angle, elementX1, elementY1, elementX2, elementY2, selectionColors } =
+    elementProperties;
+  const elementWidth = elementX2 - elementX1;
+  const elementHeight = elementY2 - elementY1;
+
+  const dashedLinePadding = 4 / renderConfig.zoom.value;
+  const dashWidth = 8 / renderConfig.zoom.value;
+  const spaceWidth = 4 / renderConfig.zoom.value;
+
+  context.save();
+  context.translate(renderConfig.scrollX, renderConfig.scrollY);
+  context.lineWidth = 1 / renderConfig.zoom.value;
+
+  const count = selectionColors.length;
+  for (let index = 0; index < count; ++index) {
+    context.strokeStyle = selectionColors[index];
+    context.setLineDash([
+      dashWidth,
+      spaceWidth + (dashWidth + spaceWidth) * (count - 1),
+    ]);
+    context.lineDashOffset = (dashWidth + spaceWidth) * index;
+    strokeRectWithRotation(
+      context,
+      elementX1 - dashedLinePadding,
+      elementY1 - dashedLinePadding,
+      elementWidth + dashedLinePadding * 2,
+      elementHeight + dashedLinePadding * 2,
+      elementX1 + elementWidth / 2,
+      elementY1 + elementHeight / 2,
+      angle,
+    );
+  }
+  context.restore();
+};
+
+const renderBindingHighlight = (
+  context: CanvasRenderingContext2D,
+  renderConfig: RenderConfig,
+  suggestedBinding: SuggestedBinding,
+) => {
+  const renderHighlight = Array.isArray(suggestedBinding)
+    ? renderBindingHighlightForSuggestedPointBinding
+    : renderBindingHighlightForBindableElement;
+
+  context.save();
+  context.translate(renderConfig.scrollX, renderConfig.scrollY);
+  renderHighlight(context, suggestedBinding as any);
+
+  context.restore();
+};
+
+const renderBindingHighlightForBindableElement = (
+  context: CanvasRenderingContext2D,
+  element: ExcalidrawBindableElement,
+) => {
+  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+  const width = x2 - x1;
+  const height = y2 - y1;
+  const threshold = maxBindingGap(element, width, height);
+
+  // So that we don't overlap the element itself
+  const strokeOffset = 4;
+  context.strokeStyle = "rgba(0,0,0,.05)";
+  context.lineWidth = threshold - strokeOffset;
+  const padding = strokeOffset / 2 + threshold / 2;
+
+  switch (element.type) {
+    case "rectangle":
+    case "text":
+    case "image":
+      strokeRectWithRotation(
+        context,
+        x1 - padding,
+        y1 - padding,
+        width + padding * 2,
+        height + padding * 2,
+        x1 + width / 2,
+        y1 + height / 2,
+        element.angle,
+      );
+      break;
+    case "diamond":
+      const side = Math.hypot(width, height);
+      const wPadding = (padding * side) / height;
+      const hPadding = (padding * side) / width;
+      strokeDiamondWithRotation(
+        context,
+        width + wPadding * 2,
+        height + hPadding * 2,
+        x1 + width / 2,
+        y1 + height / 2,
+        element.angle,
+      );
+      break;
+    case "ellipse":
+      strokeEllipseWithRotation(
+        context,
+        width + padding * 2,
+        height + padding * 2,
+        x1 + width / 2,
+        y1 + height / 2,
+        element.angle,
+      );
+      break;
+  }
+};
+
+const renderBindingHighlightForSuggestedPointBinding = (
+  context: CanvasRenderingContext2D,
+  suggestedBinding: SuggestedPointBinding,
+) => {
+  const [element, startOrEnd, bindableElement] = suggestedBinding;
+
+  const threshold = maxBindingGap(
+    bindableElement,
+    bindableElement.width,
+    bindableElement.height,
+  );
+
+  context.strokeStyle = "rgba(0,0,0,0)";
+  context.fillStyle = "rgba(0,0,0,.05)";
+
+  const pointIndices =
+    startOrEnd === "both" ? [0, -1] : startOrEnd === "start" ? [0] : [-1];
+  pointIndices.forEach((index) => {
+    const [x, y] = LinearElementEditor.getPointAtIndexGlobalCoordinates(
+      element,
+      index,
+    );
+    fillCircle(context, x, y, threshold);
+  });
+};
+
+let linkCanvasCache: any;
+const renderLinkIcon = (
+  element: NonDeletedExcalidrawElement,
+  context: CanvasRenderingContext2D,
+  appState: AppState,
+) => {
+  if (element.link && !appState.selectedElementIds[element.id]) {
+    const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+    const [x, y, width, height] = getLinkHandleFromCoords(
+      [x1, y1, x2, y2],
+      element.angle,
+      appState,
+    );
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+    context.save();
+    context.translate(appState.scrollX + centerX, appState.scrollY + centerY);
+    context.rotate(element.angle);
+
+    if (!linkCanvasCache || linkCanvasCache.zoom !== appState.zoom.value) {
+      linkCanvasCache = document.createElement("canvas");
+      linkCanvasCache.zoom = appState.zoom.value;
+      linkCanvasCache.width =
+        width * window.devicePixelRatio * appState.zoom.value;
+      linkCanvasCache.height =
+        height * window.devicePixelRatio * appState.zoom.value;
+      const linkCanvasCacheContext = linkCanvasCache.getContext("2d")!;
+      linkCanvasCacheContext.scale(
+        window.devicePixelRatio * appState.zoom.value,
+        window.devicePixelRatio * appState.zoom.value,
+      );
+      linkCanvasCacheContext.fillStyle = "#fff";
+      linkCanvasCacheContext.fillRect(0, 0, width, height);
+      linkCanvasCacheContext.drawImage(EXTERNAL_LINK_IMG, 0, 0, width, height);
+      linkCanvasCacheContext.restore();
+      context.drawImage(
+        linkCanvasCache,
+        x - centerX,
+        y - centerY,
+        width,
+        height,
+      );
+    } else {
+      context.drawImage(
+        linkCanvasCache,
+        x - centerX,
+        y - centerY,
+        width,
+        height,
+      );
+    }
+    context.restore();
+  }
 };
 
 const isVisibleElement = (
   element: ExcalidrawElement,
-  viewportWidth: number,
-  viewportHeight: number,
-  {
-    scrollX,
-    scrollY,
-    zoom,
-  }: {
-    scrollX: FlooredNumber;
-    scrollY: FlooredNumber;
-    zoom: number;
+  canvasWidth: number,
+  canvasHeight: number,
+  viewTransformations: {
+    zoom: Zoom;
+    offsetLeft: number;
+    offsetTop: number;
+    scrollX: number;
+    scrollY: number;
   },
 ) => {
-  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
-
-  // Apply zoom
-  const viewportWidthWithZoom = viewportWidth / zoom;
-  const viewportHeightWithZoom = viewportHeight / zoom;
-
-  const viewportWidthDiff = viewportWidth - viewportWidthWithZoom;
-  const viewportHeightDiff = viewportHeight - viewportHeightWithZoom;
+  const [x1, y1, x2, y2] = getElementBounds(element); // scene coordinates
+  const topLeftSceneCoords = viewportCoordsToSceneCoords(
+    {
+      clientX: viewTransformations.offsetLeft,
+      clientY: viewTransformations.offsetTop,
+    },
+    viewTransformations,
+  );
+  const bottomRightSceneCoords = viewportCoordsToSceneCoords(
+    {
+      clientX: viewTransformations.offsetLeft + canvasWidth,
+      clientY: viewTransformations.offsetTop + canvasHeight,
+    },
+    viewTransformations,
+  );
 
   return (
-    x2 + scrollX - viewportWidthDiff / 2 >= 0 &&
-    x1 + scrollX - viewportWidthDiff / 2 <= viewportWidthWithZoom &&
-    y2 + scrollY - viewportHeightDiff / 2 >= 0 &&
-    y1 + scrollY - viewportHeightDiff / 2 <= viewportHeightWithZoom
+    topLeftSceneCoords.x <= x2 &&
+    topLeftSceneCoords.y <= y2 &&
+    bottomRightSceneCoords.x >= x1 &&
+    bottomRightSceneCoords.y >= y1
   );
 };
 
@@ -597,12 +843,15 @@ export const renderSceneToSvg = (
   elements: readonly NonDeletedExcalidrawElement[],
   rsvg: RoughSVG,
   svgRoot: SVGElement,
+  files: BinaryFiles,
   {
     offsetX = 0,
     offsetY = 0,
+    exportWithDarkMode = false,
   }: {
     offsetX?: number;
     offsetY?: number;
+    exportWithDarkMode?: boolean;
   } = {},
 ) => {
   if (!svgRoot) {
@@ -611,13 +860,19 @@ export const renderSceneToSvg = (
   // render elements
   elements.forEach((element) => {
     if (!element.isDeleted) {
-      renderElementToSvg(
-        element,
-        rsvg,
-        svgRoot,
-        element.x + offsetX,
-        element.y + offsetY,
-      );
+      try {
+        renderElementToSvg(
+          element,
+          rsvg,
+          svgRoot,
+          files,
+          element.x + offsetX,
+          element.y + offsetY,
+          exportWithDarkMode,
+        );
+      } catch (error: any) {
+        console.error(error);
+      }
     }
   });
 };

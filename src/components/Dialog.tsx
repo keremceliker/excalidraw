@@ -1,39 +1,46 @@
-import React, { useEffect, useRef } from "react";
-import { Modal } from "./Modal";
-import { Island } from "./Island";
+import clsx from "clsx";
+import React, { useEffect, useState } from "react";
+import { useCallbackRefState } from "../hooks/useCallbackRefState";
 import { t } from "../i18n";
-import useIsMobile from "../is-mobile";
-import { back, close } from "./icons";
+import { useExcalidrawContainer, useIsMobile } from "../components/App";
 import { KEYS } from "../keys";
-
 import "./Dialog.scss";
+import { back, close } from "./icons";
+import { Island } from "./Island";
+import { Modal } from "./Modal";
+import { AppState } from "../types";
 
-export const Dialog = (props: {
+export interface DialogProps {
   children: React.ReactNode;
   className?: string;
-  maxWidth?: number;
+  small?: boolean;
   onCloseRequest(): void;
   title: React.ReactNode;
-}) => {
-  const islandRef = useRef<HTMLDivElement>(null);
+  autofocus?: boolean;
+  theme?: AppState["theme"];
+  closeOnClickOutside?: boolean;
+}
+
+export const Dialog = (props: DialogProps) => {
+  const [islandNode, setIslandNode] = useCallbackRefState<HTMLDivElement>();
+  const [lastActiveElement] = useState(document.activeElement);
+  const { id } = useExcalidrawContainer();
 
   useEffect(() => {
-    const focusableElements = queryFocusableElements();
+    if (!islandNode) {
+      return;
+    }
 
-    if (focusableElements.length > 0) {
+    const focusableElements = queryFocusableElements(islandNode);
+
+    if (focusableElements.length > 0 && props.autofocus !== false) {
       // If there's an element other than close, focus it.
       (focusableElements[1] || focusableElements[0]).focus();
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!islandRef.current) {
-      return;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === KEYS.TAB) {
-        const focusableElements = queryFocusableElements();
+        const focusableElements = queryFocusableElements(islandNode);
         const { activeElement } = document;
         const currentIndex = focusableElements.findIndex(
           (element) => element === activeElement,
@@ -52,39 +59,45 @@ export const Dialog = (props: {
       }
     };
 
-    const node = islandRef.current;
-    node.addEventListener("keydown", handleKeyDown);
+    islandNode.addEventListener("keydown", handleKeyDown);
 
-    return () => node.removeEventListener("keydown", handleKeyDown);
-  }, []);
+    return () => islandNode.removeEventListener("keydown", handleKeyDown);
+  }, [islandNode, props.autofocus]);
 
-  const queryFocusableElements = () => {
-    const focusableElements = islandRef.current?.querySelectorAll<HTMLElement>(
+  const queryFocusableElements = (node: HTMLElement) => {
+    const focusableElements = node.querySelectorAll<HTMLElement>(
       "button, a, input, select, textarea, div[tabindex]",
     );
 
     return focusableElements ? Array.from(focusableElements) : [];
   };
 
+  const onClose = () => {
+    (lastActiveElement as HTMLElement).focus();
+    props.onCloseRequest();
+  };
+
   return (
     <Modal
-      className={`${props.className ?? ""} Dialog`}
+      className={clsx("Dialog", props.className)}
       labelledBy="dialog-title"
-      maxWidth={props.maxWidth}
-      onCloseRequest={props.onCloseRequest}
+      maxWidth={props.small ? 550 : 800}
+      onCloseRequest={onClose}
+      theme={props.theme}
+      closeOnClickOutside={props.closeOnClickOutside}
     >
-      <Island padding={4} ref={islandRef}>
-        <h2 id="dialog-title" className="Dialog__title">
+      <Island ref={setIslandNode}>
+        <h2 id={`${id}-dialog-title`} className="Dialog__title">
           <span className="Dialog__titleContent">{props.title}</span>
           <button
             className="Modal__close"
-            onClick={props.onCloseRequest}
+            onClick={onClose}
             aria-label={t("buttons.close")}
           >
             {useIsMobile() ? back : close}
           </button>
         </h2>
-        {props.children}
+        <div className="Dialog__content">{props.children}</div>
       </Island>
     </Modal>
   );

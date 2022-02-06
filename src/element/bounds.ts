@@ -1,4 +1,10 @@
-import { ExcalidrawElement, ExcalidrawLinearElement } from "./types";
+import {
+  ExcalidrawElement,
+  ExcalidrawLinearElement,
+  Arrowhead,
+  ExcalidrawFreeDrawElement,
+  NonDeleted,
+} from "./types";
 import { distance2d, rotate } from "../math";
 import rough from "roughjs/bin/rough";
 import { Drawable, Op } from "roughjs/bin/core";
@@ -7,15 +13,20 @@ import {
   getShapeForElement,
   generateRoughOptions,
 } from "../renderer/renderElement";
-import { isLinearElement } from "./typeChecks";
+import { isFreeDrawElement, isLinearElement } from "./typeChecks";
 import { rescalePoints } from "../points";
+
+// x and y position of top left corner, x and y position of bottom right corner
+export type Bounds = readonly [number, number, number, number];
 
 // If the element is created from right to left, the width is going to be negative
 // This set of functions retrieves the absolute position of the 4 points.
 export const getElementAbsoluteCoords = (
   element: ExcalidrawElement,
-): [number, number, number, number] => {
-  if (isLinearElement(element)) {
+): Bounds => {
+  if (isFreeDrawElement(element)) {
+    return getFreeDrawElementAbsoluteCoords(element);
+  } else if (isLinearElement(element)) {
     return getLinearElementAbsoluteCoords(element);
   }
   return [
@@ -24,6 +35,13 @@ export const getElementAbsoluteCoords = (
     element.x + element.width,
     element.y + element.height,
   ];
+};
+
+export const pointRelativeTo = (
+  element: ExcalidrawElement,
+  absoluteCoords: Point,
+): Point => {
+  return [absoluteCoords[0] - element.x, absoluteCoords[1] - element.y];
 };
 
 export const getDiamondPoints = (element: ExcalidrawElement) => {
@@ -35,7 +53,7 @@ export const getDiamondPoints = (element: ExcalidrawElement) => {
   const rightY = Math.floor(element.height / 2) + 1;
   const bottomX = topX;
   const bottomY = element.height;
-  const leftX = topY;
+  const leftX = 0;
   const leftY = rightY;
 
   return [topX, topY, rightX, rightY, bottomX, bottomY, leftX, leftY];
@@ -61,7 +79,7 @@ const getMinMaxXYFromCurvePathOps = (
       // move, bcurveTo, lineTo, and curveTo
       if (op === "move") {
         // change starting point
-        currentP = (data as unknown) as Point;
+        currentP = data as unknown as Point;
         // move operation does not draw anything; so, it always
         // returns false
       } else if (op === "bcurveTo") {
@@ -110,9 +128,42 @@ const getMinMaxXYFromCurvePathOps = (
   return [minX, minY, maxX, maxY];
 };
 
+const getBoundsFromPoints = (
+  points: ExcalidrawFreeDrawElement["points"],
+): [number, number, number, number] => {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+
+  return [minX, minY, maxX, maxY];
+};
+
+const getFreeDrawElementAbsoluteCoords = (
+  element: ExcalidrawFreeDrawElement,
+): [number, number, number, number] => {
+  const [minX, minY, maxX, maxY] = getBoundsFromPoints(element.points);
+
+  return [
+    minX + element.x,
+    minY + element.y,
+    maxX + element.x,
+    maxY + element.y,
+  ];
+};
+
 const getLinearElementAbsoluteCoords = (
   element: ExcalidrawLinearElement,
 ): [number, number, number, number] => {
+  let coords: [number, number, number, number];
+
   if (element.points.length < 2 || !getShapeForElement(element)) {
     // XXX this is just a poor estimate and not very useful
     const { minX, minY, maxX, maxY } = element.points.reduce(
@@ -127,7 +178,21 @@ const getLinearElementAbsoluteCoords = (
       },
       { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
     );
-    return [
+    coords = [
+      minX + element.x,
+      minY + element.y,
+      maxX + element.x,
+      maxY + element.y,
+    ];
+  } else {
+    const shape = getShapeForElement(element) as Drawable[];
+
+    // first element is always the curve
+    const ops = getCurvePathOps(shape[0]);
+
+    const [minX, minY, maxX, maxY] = getMinMaxXYFromCurvePathOps(ops);
+
+    coords = [
       minX + element.x,
       minY + element.y,
       maxX + element.x,
@@ -135,39 +200,35 @@ const getLinearElementAbsoluteCoords = (
     ];
   }
 
-  const shape = getShapeForElement(element) as Drawable[];
-
-  // first element is always the curve
-  const ops = getCurvePathOps(shape[0]);
-
-  const [minX, minY, maxX, maxY] = getMinMaxXYFromCurvePathOps(ops);
-
-  return [
-    minX + element.x,
-    minY + element.y,
-    maxX + element.x,
-    maxY + element.y,
-  ];
+  return coords;
 };
 
-export const getArrowPoints = (
+export const getArrowheadPoints = (
   element: ExcalidrawLinearElement,
   shape: Drawable[],
+  position: "start" | "end",
+  arrowhead: Arrowhead,
 ) => {
   const ops = getCurvePathOps(shape[0]);
+  if (ops.length < 1) {
+    return null;
+  }
 
-  const data = ops[ops.length - 1].data;
+  // The index of the bCurve operation to examine.
+  const index = position === "start" ? 1 : ops.length - 1;
+
+  const data = ops[index].data;
   const p3 = [data[4], data[5]] as Point;
   const p2 = [data[2], data[3]] as Point;
   const p1 = [data[0], data[1]] as Point;
 
-  // we need to find p0 of the bezier curve
-  // it is typically the last point of the previous
-  // curve; it can also be the position of moveTo operation
-  const prevOp = ops[ops.length - 2];
+  // We need to find p0 of the bezier curve.
+  // It is typically the last point of the previous
+  // curve; it can also be the position of moveTo operation.
+  const prevOp = ops[index - 1];
   let p0: Point = [0, 0];
   if (prevOp.op === "move") {
-    p0 = (prevOp.data as unknown) as Point;
+    p0 = prevOp.data as unknown as Point;
   } else if (prevOp.op === "bcurveTo") {
     p0 = [prevOp.data[4], prevOp.data[5]];
   }
@@ -179,38 +240,68 @@ export const getArrowPoints = (
     3 * Math.pow(t, 2) * (1 - t) * p1[idx] +
     p0[idx] * Math.pow(t, 3);
 
-  // we know the last point of the arrow
-  const [x2, y2] = p3;
+  // Ee know the last point of the arrow (or the first, if start arrowhead).
+  const [x2, y2] = position === "start" ? p0 : p3;
 
-  // by using cubic bezier equation (B(t)) and the given parameters,
-  // we calculate a point that is closer to the last point
+  // By using cubic bezier equation (B(t)) and the given parameters,
+  // we calculate a point that is closer to the last point.
   // The value 0.3 is chosen arbitrarily and it works best for all
-  // the tested cases
+  // the tested cases.
   const [x1, y1] = [equation(0.3, 0), equation(0.3, 1)];
 
-  // find the normalized direction vector based on the
-  // previously calculated points
+  // Find the normalized direction vector based on the
+  // previously calculated points.
   const distance = Math.hypot(x2 - x1, y2 - y1);
   const nx = (x2 - x1) / distance;
   const ny = (y2 - y1) / distance;
 
-  const size = 30; // pixels
-  const arrowLength = element.points.reduce((total, [cx, cy], idx, points) => {
-    const [px, py] = idx > 0 ? points[idx - 1] : [0, 0];
-    return total + Math.hypot(cx - px, cy - py);
-  }, 0);
+  const size = {
+    arrow: 30,
+    bar: 15,
+    dot: 15,
+    triangle: 15,
+  }[arrowhead]; // pixels (will differ for each arrowhead)
 
-  // Scale down the arrow until we hit a certain size so that it doesn't look weird
-  // This value is selected by minizing a minmum size with the whole length of the arrow
-  // intead of last segment of the arrow
-  const minSize = Math.min(size, arrowLength / 2);
+  let length = 0;
+
+  if (arrowhead === "arrow") {
+    // Length for -> arrows is based on the length of the last section
+    const [cx, cy] = element.points[element.points.length - 1];
+    const [px, py] =
+      element.points.length > 1
+        ? element.points[element.points.length - 2]
+        : [0, 0];
+
+    length = Math.hypot(cx - px, cy - py);
+  } else {
+    // Length for other arrowhead types is based on the total length of the line
+    for (let i = 0; i < element.points.length; i++) {
+      const [px, py] = element.points[i - 1] || [0, 0];
+      const [cx, cy] = element.points[i];
+      length += Math.hypot(cx - px, cy - py);
+    }
+  }
+
+  // Scale down the arrowhead until we hit a certain size so that it doesn't look weird.
+  // This value is selected by minimizing a minimum size with the last segment of the arrowhead
+  const minSize = Math.min(size, length / 2);
   const xs = x2 - nx * minSize;
   const ys = y2 - ny * minSize;
 
-  const angle = 20; // degrees
+  if (arrowhead === "dot") {
+    const r = Math.hypot(ys - y2, xs - x2) + element.strokeWidth;
+    return [x2, y2, r];
+  }
+
+  const angle = {
+    arrow: 20,
+    bar: 90,
+    triangle: 25,
+  }[arrowhead]; // degrees
+
+  // Return points
   const [x3, y3] = rotate(xs, ys, x2, y2, (-angle * Math.PI) / 180);
   const [x4, y4] = rotate(xs, ys, x2, y2, (angle * Math.PI) / 180);
-
   return [x2, y2, x3, y3, x4, y4];
 };
 
@@ -245,16 +336,31 @@ const getLinearElementRotatedBounds = (
   return getMinMaxXYFromCurvePathOps(ops, transformXY);
 };
 
+// We could cache this stuff
 export const getElementBounds = (
   element: ExcalidrawElement,
 ): [number, number, number, number] => {
+  let bounds: [number, number, number, number];
+
   const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
   const cx = (x1 + x2) / 2;
   const cy = (y1 + y2) / 2;
-  if (isLinearElement(element)) {
-    return getLinearElementRotatedBounds(element, cx, cy);
-  }
-  if (element.type === "diamond") {
+  if (isFreeDrawElement(element)) {
+    const [minX, minY, maxX, maxY] = getBoundsFromPoints(
+      element.points.map(([x, y]) =>
+        rotate(x, y, cx - element.x, cy - element.y, element.angle),
+      ),
+    );
+
+    return [
+      minX + element.x,
+      minY + element.y,
+      maxX + element.x,
+      maxY + element.y,
+    ];
+  } else if (isLinearElement(element)) {
+    bounds = getLinearElementRotatedBounds(element, cx, cy);
+  } else if (element.type === "diamond") {
     const [x11, y11] = rotate(cx, y1, cx, cy, element.angle);
     const [x12, y12] = rotate(cx, y2, cx, cy, element.angle);
     const [x22, y22] = rotate(x1, cy, cx, cy, element.angle);
@@ -263,26 +369,28 @@ export const getElementBounds = (
     const minY = Math.min(y11, y12, y22, y21);
     const maxX = Math.max(x11, x12, x22, x21);
     const maxY = Math.max(y11, y12, y22, y21);
-    return [minX, minY, maxX, maxY];
-  }
-  if (element.type === "ellipse") {
+    bounds = [minX, minY, maxX, maxY];
+  } else if (element.type === "ellipse") {
     const w = (x2 - x1) / 2;
     const h = (y2 - y1) / 2;
     const cos = Math.cos(element.angle);
     const sin = Math.sin(element.angle);
     const ww = Math.hypot(w * cos, h * sin);
     const hh = Math.hypot(h * cos, w * sin);
-    return [cx - ww, cy - hh, cx + ww, cy + hh];
+    bounds = [cx - ww, cy - hh, cx + ww, cy + hh];
+  } else {
+    const [x11, y11] = rotate(x1, y1, cx, cy, element.angle);
+    const [x12, y12] = rotate(x1, y2, cx, cy, element.angle);
+    const [x22, y22] = rotate(x2, y2, cx, cy, element.angle);
+    const [x21, y21] = rotate(x2, y1, cx, cy, element.angle);
+    const minX = Math.min(x11, x12, x22, x21);
+    const minY = Math.min(y11, y12, y22, y21);
+    const maxX = Math.max(x11, x12, x22, x21);
+    const maxY = Math.max(y11, y12, y22, y21);
+    bounds = [minX, minY, maxX, maxY];
   }
-  const [x11, y11] = rotate(x1, y1, cx, cy, element.angle);
-  const [x12, y12] = rotate(x1, y2, cx, cy, element.angle);
-  const [x22, y22] = rotate(x2, y2, cx, cy, element.angle);
-  const [x21, y21] = rotate(x2, y1, cx, cy, element.angle);
-  const minX = Math.min(x11, x12, x22, x21);
-  const minY = Math.min(y11, y12, y22, y21);
-  const maxX = Math.max(x11, x12, x22, x21);
-  const maxY = Math.max(y11, y12, y22, y21);
-  return [minX, minY, maxX, maxY];
+
+  return bounds;
 };
 
 export const getCommonBounds = (
@@ -313,7 +421,7 @@ export const getResizedElementAbsoluteCoords = (
   nextWidth: number,
   nextHeight: number,
 ): [number, number, number, number] => {
-  if (!isLinearElement(element)) {
+  if (!(isLinearElement(element) || isFreeDrawElement(element))) {
     return [
       element.x,
       element.y,
@@ -328,13 +436,29 @@ export const getResizedElementAbsoluteCoords = (
     rescalePoints(1, nextHeight, element.points),
   );
 
-  const gen = rough.generator();
-  const curve = gen.curve(
-    points as [number, number][],
-    generateRoughOptions(element),
-  );
-  const ops = getCurvePathOps(curve);
-  const [minX, minY, maxX, maxY] = getMinMaxXYFromCurvePathOps(ops);
+  let bounds: [number, number, number, number];
+
+  if (isFreeDrawElement(element)) {
+    // Free Draw
+    bounds = getBoundsFromPoints(points);
+  } else {
+    // Line
+    const gen = rough.generator();
+    const curve =
+      element.strokeSharpness === "sharp"
+        ? gen.linearPath(
+            points as [number, number][],
+            generateRoughOptions(element),
+          )
+        : gen.curve(
+            points as [number, number][],
+            generateRoughOptions(element),
+          );
+    const ops = getCurvePathOps(curve);
+    bounds = getMinMaxXYFromCurvePathOps(ops);
+  }
+
+  const [minX, minY, maxX, maxY] = bounds;
   return [
     minX + element.x,
     minY + element.y,
@@ -346,13 +470,17 @@ export const getResizedElementAbsoluteCoords = (
 export const getElementPointsCoords = (
   element: ExcalidrawLinearElement,
   points: readonly (readonly [number, number])[],
+  sharpness: ExcalidrawElement["strokeSharpness"],
 ): [number, number, number, number] => {
   // This might be computationally heavey
   const gen = rough.generator();
-  const curve = gen.curve(
-    points as [number, number][],
-    generateRoughOptions(element),
-  );
+  const curve =
+    sharpness === "sharp"
+      ? gen.linearPath(
+          points as [number, number][],
+          generateRoughOptions(element),
+        )
+      : gen.curve(points as [number, number][], generateRoughOptions(element));
   const ops = getCurvePathOps(curve);
   const [minX, minY, maxX, maxY] = getMinMaxXYFromCurvePathOps(ops);
   return [
@@ -385,4 +513,31 @@ export const getClosestElementBounds = (
   });
 
   return getElementBounds(closestElement);
+};
+
+export interface Box {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  midX: number;
+  midY: number;
+  width: number;
+  height: number;
+}
+
+export const getCommonBoundingBox = (
+  elements: ExcalidrawElement[] | readonly NonDeleted<ExcalidrawElement>[],
+): Box => {
+  const [minX, minY, maxX, maxY] = getCommonBounds(elements);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+    midX: (minX + maxX) / 2,
+    midY: (minY + maxY) / 2,
+  };
 };

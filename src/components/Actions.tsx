@@ -1,15 +1,24 @@
 import React from "react";
-import { AppState } from "../types";
-import { ExcalidrawElement } from "../element/types";
 import { ActionManager } from "../actions/manager";
-import { hasBackground, hasStroke, hasText, getTargetElement } from "../scene";
-import { t } from "../i18n";
-import { SHAPES } from "../shapes";
-import { ToolButton } from "./ToolButton";
-import { capitalizeString, setCursorForShape } from "../utils";
-import Stack from "./Stack";
-import useIsMobile from "../is-mobile";
 import { getNonDeletedElements } from "../element";
+import { ExcalidrawElement, PointerType } from "../element/types";
+import { t } from "../i18n";
+import { useIsMobile } from "../components/App";
+import {
+  canChangeSharpness,
+  canHaveArrowheads,
+  getTargetElements,
+  hasBackground,
+  hasStrokeStyle,
+  hasStrokeWidth,
+  hasText,
+} from "../scene";
+import { SHAPES } from "../shapes";
+import { AppState, Zoom } from "../types";
+import { capitalizeString, isTransparent, setCursorForShape } from "../utils";
+import Stack from "./Stack";
+import { ToolButton } from "./ToolButton";
+import { hasStrokeColor } from "../scene/comparisons";
 
 export const SelectedShapeActions = ({
   appState,
@@ -22,32 +31,62 @@ export const SelectedShapeActions = ({
   renderAction: ActionManager["renderAction"];
   elementType: ExcalidrawElement["type"];
 }) => {
-  const targetElements = getTargetElement(
+  const targetElements = getTargetElements(
     getNonDeletedElements(elements),
     appState,
   );
   const isEditing = Boolean(appState.editingElement);
   const isMobile = useIsMobile();
+  const isRTL = document.documentElement.getAttribute("dir") === "rtl";
+
+  const showFillIcons =
+    hasBackground(elementType) ||
+    targetElements.some(
+      (element) =>
+        hasBackground(element.type) && !isTransparent(element.backgroundColor),
+    );
+  const showChangeBackgroundIcons =
+    hasBackground(elementType) ||
+    targetElements.some((element) => hasBackground(element.type));
+
+  let commonSelectedType: string | null = targetElements[0]?.type || null;
+
+  for (const element of targetElements) {
+    if (element.type !== commonSelectedType) {
+      commonSelectedType = null;
+      break;
+    }
+  }
 
   return (
     <div className="panelColumn">
-      {renderAction("changeStrokeColor")}
-      {(hasBackground(elementType) ||
-        targetElements.some((element) => hasBackground(element.type))) && (
-        <>
-          {renderAction("changeBackgroundColor")}
+      {((hasStrokeColor(elementType) &&
+        elementType !== "image" &&
+        commonSelectedType !== "image") ||
+        targetElements.some((element) => hasStrokeColor(element.type))) &&
+        renderAction("changeStrokeColor")}
+      {showChangeBackgroundIcons && renderAction("changeBackgroundColor")}
+      {showFillIcons && renderAction("changeFillStyle")}
 
-          {renderAction("changeFillStyle")}
-        </>
-      )}
+      {(hasStrokeWidth(elementType) ||
+        targetElements.some((element) => hasStrokeWidth(element.type))) &&
+        renderAction("changeStrokeWidth")}
 
-      {(hasStroke(elementType) ||
-        targetElements.some((element) => hasStroke(element.type))) && (
+      {(elementType === "freedraw" ||
+        targetElements.some((element) => element.type === "freedraw")) &&
+        renderAction("changeStrokeShape")}
+
+      {(hasStrokeStyle(elementType) ||
+        targetElements.some((element) => hasStrokeStyle(element.type))) && (
         <>
-          {renderAction("changeStrokeWidth")}
           {renderAction("changeStrokeStyle")}
           {renderAction("changeSloppiness")}
         </>
+      )}
+
+      {(canChangeSharpness(elementType) ||
+        targetElements.some((element) => canChangeSharpness(element.type))) && (
+        <>{renderAction("changeSharpness")}</>
       )}
 
       {(hasText(elementType) ||
@@ -61,6 +100,11 @@ export const SelectedShapeActions = ({
         </>
       )}
 
+      {(canHaveArrowheads(elementType) ||
+        targetElements.some((element) => canHaveArrowheads(element.type))) && (
+        <>{renderAction("changeArrowhead")}</>
+      )}
+
       {renderAction("changeOpacity")}
 
       <fieldset>
@@ -72,12 +116,49 @@ export const SelectedShapeActions = ({
           {renderAction("bringForward")}
         </div>
       </fieldset>
+
+      {targetElements.length > 1 && (
+        <fieldset>
+          <legend>{t("labels.align")}</legend>
+          <div className="buttonList">
+            {
+              // swap this order for RTL so the button positions always match their action
+              // (i.e. the leftmost button aligns left)
+            }
+            {isRTL ? (
+              <>
+                {renderAction("alignRight")}
+                {renderAction("alignHorizontallyCentered")}
+                {renderAction("alignLeft")}
+              </>
+            ) : (
+              <>
+                {renderAction("alignLeft")}
+                {renderAction("alignHorizontallyCentered")}
+                {renderAction("alignRight")}
+              </>
+            )}
+            {targetElements.length > 2 &&
+              renderAction("distributeHorizontally")}
+            <div className="iconRow">
+              {renderAction("alignTop")}
+              {renderAction("alignVerticallyCentered")}
+              {renderAction("alignBottom")}
+              {targetElements.length > 2 &&
+                renderAction("distributeVertically")}
+            </div>
+          </div>
+        </fieldset>
+      )}
       {!isMobile && !isEditing && targetElements.length > 0 && (
         <fieldset>
           <legend>{t("labels.actions")}</legend>
           <div className="buttonList">
             {renderAction("duplicateSelection")}
             {renderAction("deleteSelectedElements")}
+            {renderAction("group")}
+            {renderAction("ungroup")}
+            {targetElements.length === 1 && renderAction("link")}
           </div>
         </fieldset>
       )}
@@ -86,20 +167,26 @@ export const SelectedShapeActions = ({
 };
 
 export const ShapesSwitcher = ({
+  canvas,
   elementType,
   setAppState,
+  onImageAction,
 }: {
+  canvas: HTMLCanvasElement | null;
   elementType: ExcalidrawElement["type"];
-  setAppState: any;
+  setAppState: React.Component<any, AppState>["setState"];
+  onImageAction: (data: { pointerType: PointerType | null }) => void;
 }) => (
   <>
     {SHAPES.map(({ value, icon, key }, index) => {
       const label = t(`toolBar.${value}`);
-      const shortcut = `${capitalizeString(key)} ${t("shortcutsDialog.or")} ${
-        index + 1
-      }`;
+      const letter = key && (typeof key === "string" ? key : key[0]);
+      const shortcut = letter
+        ? `${capitalizeString(letter)} ${t("helpDialog.or")} ${index + 1}`
+        : `${index + 1}`;
       return (
         <ToolButton
+          className="Shape"
           key={value}
           type="radio"
           icon={icon}
@@ -108,18 +195,20 @@ export const ShapesSwitcher = ({
           title={`${capitalizeString(label)} — ${shortcut}`}
           keyBindingLabel={`${index + 1}`}
           aria-label={capitalizeString(label)}
-          aria-keyshortcuts={`${key} ${index + 1}`}
+          aria-keyshortcuts={shortcut}
           data-testid={value}
-          onChange={() => {
+          onChange={({ pointerType }) => {
             setAppState({
               elementType: value,
               multiElement: null,
               selectedElementIds: {},
             });
-            setCursorForShape(value);
-            setAppState({});
+            setCursorForShape(canvas, value);
+            if (value === "image") {
+              onImageAction({ pointerType });
+            }
           }}
-        ></ToolButton>
+        />
       );
     })}
   </>
@@ -130,14 +219,13 @@ export const ZoomActions = ({
   zoom,
 }: {
   renderAction: ActionManager["renderAction"];
-  zoom: number;
+  zoom: Zoom;
 }) => (
   <Stack.Col gap={1}>
     <Stack.Row gap={1} align="center">
-      {renderAction("zoomIn")}
       {renderAction("zoomOut")}
+      {renderAction("zoomIn")}
       {renderAction("resetZoom")}
-      <div style={{ marginInlineStart: 4 }}>{(zoom * 100).toFixed(0)}%</div>
     </Stack.Row>
   </Stack.Col>
 );

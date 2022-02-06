@@ -3,16 +3,19 @@ import {
   isExcalidrawElement,
   redrawTextBoundingBox,
 } from "../element";
-import { KEYS } from "../keys";
+import { CODES, KEYS } from "../keys";
+import { t } from "../i18n";
+import { register } from "./register";
+import { mutateElement, newElementWith } from "../element/mutateElement";
 import {
   DEFAULT_FONT_SIZE,
   DEFAULT_FONT_FAMILY,
   DEFAULT_TEXT_ALIGN,
-} from "../appState";
-import { register } from "./register";
-import { mutateElement, newElementWith } from "../element/mutateElement";
+} from "../constants";
+import { getContainerElement } from "../element/textElement";
 
-let copiedStyles: string = "{}";
+// `copiedStyles` is exported only for tests.
+export let copiedStyles: string = "{}";
 
 export const actionCopyStyles = register({
   name: "copyStyles",
@@ -22,13 +25,16 @@ export const actionCopyStyles = register({
       copiedStyles = JSON.stringify(element);
     }
     return {
+      appState: {
+        ...appState,
+        toastMessage: t("toast.copyStyles"),
+      },
       commitToHistory: false,
     };
   },
   contextItemLabel: "labels.copyStyles",
   keyTest: (event) =>
-    event[KEYS.CTRL_OR_CMD] && event.shiftKey && event.key === "C",
-  contextMenuOrder: 0,
+    event[KEYS.CTRL_OR_CMD] && event.altKey && event.code === CODES.C,
 });
 
 export const actionPasteStyles = register({
@@ -45,17 +51,23 @@ export const actionPasteStyles = register({
             backgroundColor: pastedElement?.backgroundColor,
             strokeWidth: pastedElement?.strokeWidth,
             strokeColor: pastedElement?.strokeColor,
+            strokeStyle: pastedElement?.strokeStyle,
             fillStyle: pastedElement?.fillStyle,
             opacity: pastedElement?.opacity,
             roughness: pastedElement?.roughness,
           });
-          if (isTextElement(newElement)) {
+          if (isTextElement(newElement) && isTextElement(element)) {
             mutateElement(newElement, {
               fontSize: pastedElement?.fontSize || DEFAULT_FONT_SIZE,
               fontFamily: pastedElement?.fontFamily || DEFAULT_FONT_FAMILY,
               textAlign: pastedElement?.textAlign || DEFAULT_TEXT_ALIGN,
             });
-            redrawTextBoundingBox(newElement);
+
+            redrawTextBoundingBox(
+              element,
+              getContainerElement(element),
+              appState,
+            );
           }
           return newElement;
         }
@@ -66,6 +78,5 @@ export const actionPasteStyles = register({
   },
   contextItemLabel: "labels.pasteStyles",
   keyTest: (event) =>
-    event[KEYS.CTRL_OR_CMD] && event.shiftKey && event.key === "V",
-  contextMenuOrder: 1,
+    event[KEYS.CTRL_OR_CMD] && event.altKey && event.code === CODES.V,
 });

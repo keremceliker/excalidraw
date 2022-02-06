@@ -1,13 +1,14 @@
 FROM node:14-alpine AS build
 
-WORKDIR /usr/src/app
+WORKDIR /opt/node_app
 
-COPY package.json package-lock.json ./
-RUN npm install
+COPY package.json yarn.lock ./
+RUN yarn --ignore-optional
+
+ARG NODE_ENV=production
 
 COPY . .
-ENV NODE_ENV=production
-RUN npm run build:app
+RUN yarn build:app:docker
 
 FROM nginxinc/nginx-unprivileged
 

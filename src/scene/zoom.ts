@@ -1,26 +1,39 @@
-export const getZoomOrigin = (
-  canvas: HTMLCanvasElement | null,
-  scale: number,
-) => {
-  if (canvas === null) {
-    return { x: 0, y: 0 };
-  }
-  const context = canvas.getContext("2d");
-  if (context === null) {
-    return { x: 0, y: 0 };
-  }
+import { AppState, NormalizedZoomValue } from "../types";
 
-  const normalizedCanvasWidth = canvas.width / scale;
-  const normalizedCanvasHeight = canvas.height / scale;
-
-  return {
-    x: normalizedCanvasWidth / 2,
-    y: normalizedCanvasHeight / 2,
-  };
+export const getNormalizedZoom = (zoom: number): NormalizedZoomValue => {
+  return Math.max(0.1, Math.min(zoom, 30)) as NormalizedZoomValue;
 };
 
-export const getNormalizedZoom = (zoom: number): number => {
-  const normalizedZoom = parseFloat(zoom.toFixed(2));
-  const clampedZoom = Math.max(0.1, Math.min(normalizedZoom, 2));
-  return clampedZoom;
+export const getStateForZoom = (
+  {
+    viewportX,
+    viewportY,
+    nextZoom,
+  }: {
+    viewportX: number;
+    viewportY: number;
+    nextZoom: NormalizedZoomValue;
+  },
+  appState: AppState,
+) => {
+  const appLayerX = viewportX - appState.offsetLeft;
+  const appLayerY = viewportY - appState.offsetTop;
+
+  const currentZoom = appState.zoom.value;
+
+  // get original scroll position without zoom
+  const baseScrollX = appState.scrollX + (appLayerX - appLayerX / currentZoom);
+  const baseScrollY = appState.scrollY + (appLayerY - appLayerY / currentZoom);
+
+  // get scroll offsets for target zoom level
+  const zoomOffsetScrollX = -(appLayerX - appLayerX / nextZoom);
+  const zoomOffsetScrollY = -(appLayerY - appLayerY / nextZoom);
+
+  return {
+    scrollX: baseScrollX + zoomOffsetScrollX,
+    scrollY: baseScrollY + zoomOffsetScrollY,
+    zoom: {
+      value: nextZoom,
+    },
+  };
 };

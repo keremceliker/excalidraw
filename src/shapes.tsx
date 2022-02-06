@@ -1,5 +1,4 @@
-import React from "react";
-import oc from "open-color";
+import { KEYS } from "./keys";
 
 // We inline font-awesome icons in order to save on js size rather than including the font awesome react library
 export const SHAPES = [
@@ -11,7 +10,7 @@ export const SHAPES = [
       </svg>
     ),
     value: "selection",
-    key: "s",
+    key: KEYS.V,
   },
   {
     icon: (
@@ -21,7 +20,7 @@ export const SHAPES = [
       </svg>
     ),
     value: "rectangle",
-    key: "r",
+    key: KEYS.R,
   },
   {
     icon: (
@@ -31,7 +30,7 @@ export const SHAPES = [
       </svg>
     ),
     value: "diamond",
-    key: "d",
+    key: KEYS.D,
   },
   {
     icon: (
@@ -41,7 +40,7 @@ export const SHAPES = [
       </svg>
     ),
     value: "ellipse",
-    key: "e",
+    key: KEYS.E,
   },
   {
     icon: (
@@ -51,7 +50,7 @@ export const SHAPES = [
       </svg>
     ),
     value: "arrow",
-    key: "a",
+    key: KEYS.A,
   },
   {
     icon: (
@@ -62,13 +61,13 @@ export const SHAPES = [
           y1="3"
           x2="6"
           y2="3"
-          stroke={oc.black}
+          stroke="currentColor"
           strokeLinecap="round"
         />
       </svg>
     ),
     value: "line",
-    key: "l",
+    key: [KEYS.P, KEYS.L],
   },
   {
     icon: (
@@ -80,8 +79,8 @@ export const SHAPES = [
         ></path>
       </svg>
     ),
-    value: "draw",
-    key: "x",
+    value: "freedraw",
+    key: [KEYS.X, KEYS.P.toUpperCase()],
   },
   {
     icon: (
@@ -91,16 +90,32 @@ export const SHAPES = [
       </svg>
     ),
     value: "text",
-    key: "t",
+    key: KEYS.T,
+  },
+  {
+    icon: (
+      // fa-image
+      <svg viewBox="0 0 512 512">
+        <path
+          fill="currentColor"
+          d="M464 64H48C21.49 64 0 85.49 0 112v288c0 26.51 21.49 48 48 48h416c26.51 0 48-21.49 48-48V112c0-26.51-21.49-48-48-48zm-6 336H54a6 6 0 0 1-6-6V118a6 6 0 0 1 6-6h404a6 6 0 0 1 6 6v276a6 6 0 0 1-6 6zM128 152c-22.091 0-40 17.909-40 40s17.909 40 40 40 40-17.909 40-40-17.909-40-40-40zM96 352h320v-80l-87.515-87.515c-4.686-4.686-12.284-4.686-16.971 0L192 304l-39.515-39.515c-4.686-4.686-12.284-4.686-16.971 0L96 304v48z"
+        ></path>
+      </svg>
+    ),
+    value: "image",
+    key: null,
   },
 ] as const;
 
-export const shapesShortcutKeys = SHAPES.map((shape, index) => [
-  shape.key,
-  (index + 1).toString(),
-]).flat(1);
-
-export const findShapeByKey = (key: string) =>
-  SHAPES.find((shape, index) => {
-    return shape.key === key.toLowerCase() || key === (index + 1).toString();
-  })?.value || "selection";
+export const findShapeByKey = (key: string) => {
+  const shape = SHAPES.find((shape, index) => {
+    return (
+      key === (index + 1).toString() ||
+      (shape.key &&
+        (typeof shape.key === "string"
+          ? shape.key === key
+          : (shape.key as readonly string[]).includes(key)))
+    );
+  });
+  return shape?.value || null;
+};

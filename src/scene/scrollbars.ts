@@ -1,6 +1,6 @@
 import { ExcalidrawElement } from "../element/types";
 import { getCommonBounds } from "../element";
-import { FlooredNumber } from "../types";
+import { Zoom } from "../types";
 import { ScrollBars } from "./types";
 import { getGlobalCSSVariable } from "../utils";
 import { getLanguage } from "../i18n";
@@ -18,22 +18,24 @@ export const getScrollBars = (
     scrollY,
     zoom,
   }: {
-    scrollX: FlooredNumber;
-    scrollY: FlooredNumber;
-    zoom: number;
+    scrollX: number;
+    scrollY: number;
+    zoom: Zoom;
   },
 ): ScrollBars => {
+  if (elements.length === 0) {
+    return {
+      horizontal: null,
+      vertical: null,
+    };
+  }
   // This is the bounding box of all the elements
-  const [
-    elementsMinX,
-    elementsMinY,
-    elementsMaxX,
-    elementsMaxY,
-  ] = getCommonBounds(elements);
+  const [elementsMinX, elementsMinY, elementsMaxX, elementsMaxY] =
+    getCommonBounds(elements);
 
   // Apply zoom
-  const viewportWidthWithZoom = viewportWidth / zoom;
-  const viewportHeightWithZoom = viewportHeight / zoom;
+  const viewportWidthWithZoom = viewportWidth / zoom.value;
+  const viewportHeightWithZoom = viewportHeight / zoom.value;
 
   const viewportWidthDiff = viewportWidth - viewportWidthWithZoom;
   const viewportHeightDiff = viewportHeight - viewportHeightWithZoom;
@@ -106,22 +108,23 @@ export const isOverScrollBars = (
   scrollBars: ScrollBars,
   x: number,
   y: number,
-) => {
-  const [isOverHorizontalScrollBar, isOverVerticalScrollBar] = [
+): {
+  isOverEither: boolean;
+  isOverHorizontal: boolean;
+  isOverVertical: boolean;
+} => {
+  const [isOverHorizontal, isOverVertical] = [
     scrollBars.horizontal,
     scrollBars.vertical,
   ].map((scrollBar) => {
     return (
-      scrollBar &&
+      scrollBar != null &&
       scrollBar.x <= x &&
       x <= scrollBar.x + scrollBar.width &&
       scrollBar.y <= y &&
       y <= scrollBar.y + scrollBar.height
     );
   });
-
-  return {
-    isOverHorizontalScrollBar,
-    isOverVerticalScrollBar,
-  };
+  const isOverEither = isOverHorizontal || isOverVertical;
+  return { isOverEither, isOverHorizontal, isOverVertical };
 };

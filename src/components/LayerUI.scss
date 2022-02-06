@@ -1,133 +1,98 @@
 @import "open-color/open-color";
 
-.layer-ui__wrapper {
-  .encrypted-icon {
-    position: relative;
-    margin-inline-start: 15px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    border-radius: var(--space-factor);
-    color: $oc-green-9;
+.excalidraw {
+  .layer-ui__wrapper {
+    z-index: var(--zIndex-layerUI);
 
-    svg {
-      width: 1.2rem;
-      height: 1.2rem;
+    &__top-right {
+      display: flex;
     }
 
-    &.tooltip .tooltip-text {
-      visibility: hidden;
-      width: 20rem;
-      bottom: calc(50% + 0.8rem + 6px);
-      :root[dir="ltr"] & {
-        left: -5px;
+    &__footer {
+      width: 100%;
+
+      &-right {
+        z-index: 100;
+        display: flex;
       }
-      :root[dir="rtl"] & {
-        right: -5px;
+    }
+
+    .zen-mode-transition {
+      transition: transform 0.5s ease-in-out;
+
+      :root[dir="ltr"] &.transition-left {
+        transform: translate(-999px, 0);
       }
-      background-color: $oc-black;
-      color: $oc-white;
-      text-align: center;
-      border-radius: 6px;
-      padding: 5px;
+
+      :root[dir="ltr"] &.transition-right {
+        transform: translate(999px, 0);
+      }
+
+      :root[dir="rtl"] &.transition-left {
+        transform: translate(999px, 0);
+      }
+
+      :root[dir="rtl"] &.transition-right {
+        transform: translate(-999px, 0);
+      }
+
+      :root[dir="ltr"] &.layer-ui__wrapper__footer-left--transition-left {
+        transform: translate(-76px, 0);
+      }
+      :root[dir="rtl"] &.layer-ui__wrapper__footer-left--transition-left {
+        transform: translate(76px, 0);
+      }
+
+      &.layer-ui__wrapper__footer-left--transition-bottom {
+        transform: translate(0, 92px);
+      }
+    }
+
+    .disable-zen-mode {
+      height: 30px;
       position: absolute;
-      z-index: 10;
-      font-size: 13px;
-      line-height: 1.5;
-      white-space: pre-wrap;
+      bottom: 10px;
+      [dir="ltr"] & {
+        right: 15px;
+      }
+      [dir="rtl"] & {
+        left: 15px;
+      }
+      font-size: 10px;
+      padding: 10px;
+      font-weight: 500;
+      opacity: 0;
+      visibility: hidden;
+      transition: visibility 0s linear 0s, opacity 0.5s;
 
-      &::after {
-        --size: 6px;
-        content: "";
-        border: var(--size) solid transparent;
-        border-top-color: $oc-black;
-        position: absolute;
-        bottom: calc(-2 * var(--size));
-        :root[dir="ltr"] & {
-          left: calc(5px + var(--size) / 2);
-        }
-        :root[dir="rtl"] & {
-          right: calc(5px + var(--size) / 2);
-        }
+      &--visible {
+        opacity: 1;
+        visibility: visible;
+        transition: visibility 0s linear 300ms, opacity 0.5s;
+        transition-delay: 0.8s;
       }
     }
 
-    // the following 3 rules ensure that the tooltip doesn't show (nor affect
-    // the cursor) when you drag over when you draw on canvas, but at the same
-    // time it still works when clicking on the link/shield
-
-    body:active &.tooltip:not(:hover) {
+    .layer-ui__wrapper__footer-center {
       pointer-events: none;
+      & > * {
+        pointer-events: all;
+      }
     }
-    body:not(:active) &.tooltip:hover .tooltip-text {
-      visibility: visible;
-    }
-    .tooltip-text:hover {
-      visibility: visible;
-    }
-  }
-
-  &__github-corner {
-    top: 0;
-    :root[dir="ltr"] & {
-      right: 0;
-    }
-    :root[dir="rtl"] & {
-      left: 0;
-    }
-    position: absolute;
-    width: 40px;
-  }
-
-  &__footer {
-    position: absolute;
-    bottom: 0px;
-    :root[dir="ltr"] & {
-      right: 0;
-    }
-    :root[dir="rtl"] & {
-      left: 0;
-    }
-    width: 190px;
-  }
-
-  .zen-mode-transition {
-    transition: transform 0.5s ease-in-out;
-    :root[dir="ltr"] &.transition-left {
-      transform: translate(-999px, 0);
-    }
-    :root[dir="ltr"] &.transition-right {
-      transform: translate(999px, 0px);
-    }
-    :root[dir="rtl"] &.transition-left {
-      transform: translate(999px, 0);
-    }
-    :root[dir="rtl"] &.transition-right {
-      transform: translate(-999px, 0);
+    .layer-ui__wrapper__footer-left,
+    .layer-ui__wrapper__footer-right,
+    .disable-zen-mode--visible {
+      pointer-events: all;
     }
 
-    &.App-menu_bottom--transition-left {
-      transform: translate(-92px, 0);
+    .layer-ui__wrapper__footer-left {
+      margin-bottom: 0.2em;
     }
-  }
 
-  .disable-zen-mode {
-    height: 30px;
-    position: absolute;
-    bottom: 10px;
-    right: 15px;
-    font-size: 10px;
-    padding: 10px;
-    font-weight: 500;
-    opacity: 0;
-    visibility: hidden;
-    transition: visibility 0s linear 0s, opacity 0.5s;
-
-    &--visible {
-      opacity: 1;
-      visibility: visible;
-      transition: visibility 0s linear 300ms, opacity 0.5s;
-      transition-delay: 0.8s;
+    .layer-ui__wrapper__footer-right {
+      margin-top: auto;
+      margin-bottom: auto;
+      margin-inline-end: 1em;
     }
   }
 }

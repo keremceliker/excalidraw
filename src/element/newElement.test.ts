@@ -1,9 +1,7 @@
-import {
-  newTextElement,
-  duplicateElement,
-  newLinearElement,
-} from "./newElement";
+import { duplicateElement } from "./newElement";
 import { mutateElement } from "./mutateElement";
+import { API } from "../tests/helpers/api";
+import { FONT_FAMILY } from "../constants";
 
 const isPrimitive = (val: any) => {
   const type = typeof val;
@@ -22,7 +20,7 @@ const assertCloneObjects = (source: any, clone: any) => {
 };
 
 it("clones arrow element", () => {
-  const element = newLinearElement({
+  const element = API.createElement({
     type: "arrow",
     x: 0,
     y: 0,
@@ -31,6 +29,7 @@ it("clones arrow element", () => {
     fillStyle: "hachure",
     strokeWidth: 1,
     strokeStyle: "solid",
+    strokeSharpness: "round",
     roughness: 1,
     opacity: 100,
   });
@@ -67,7 +66,8 @@ it("clones arrow element", () => {
 });
 
 it("clones text element", () => {
-  const element = newTextElement({
+  const element = API.createElement({
+    type: "text",
     x: 0,
     y: 0,
     strokeColor: "#000000",
@@ -75,12 +75,14 @@ it("clones text element", () => {
     fillStyle: "hachure",
     strokeWidth: 1,
     strokeStyle: "solid",
+    strokeSharpness: "round",
     roughness: 1,
     opacity: 100,
     text: "hello",
     fontSize: 20,
-    fontFamily: 1,
+    fontFamily: FONT_FAMILY.Virgil,
     textAlign: "left",
+    verticalAlign: "top",
   });
 
   const copy = duplicateElement(null, new Map(), element);
