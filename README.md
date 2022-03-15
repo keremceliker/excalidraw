@@ -181,4 +181,3 @@ oc new-app --as-deployment-config --docker-image=quay.io/eformat/excalidraw:late
 oc expose svc excalidraw
 oc patch route/excalidraw --type=json -p '[{"op":"add", "path":"/spec/tls", "value":{"termination":"edge","insecureEdgeTerminationPolicy":"Redirect"}}]'
 ```
-=======
