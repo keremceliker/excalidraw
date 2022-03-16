@@ -181,7 +181,9 @@ make podman-push
 
 ```
 oc new-project excalidraw
-oc new-app --as-deployment-config --docker-image=quay.io/eformat/excalidraw:latest --name=excalidraw
+oc new-app --as-deployment-config --docker-image=quay.io/eformat/excalidraw:v1 --name=excalidraw
 oc expose svc excalidraw
 oc patch route/excalidraw --type=json -p '[{"op":"add", "path":"/spec/tls", "value":{"termination":"edge","insecureEdgeTerminationPolicy":"Redirect"}}]'
 ```
+
+**Note** the `:latest` version has some nice features, but collaboration is not working yet (needs a new excalidraw-room component for sharing) - WIP
