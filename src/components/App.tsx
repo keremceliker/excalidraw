@@ -35,7 +35,7 @@ import { ActionManager } from "../actions/manager";
 import { actions } from "../actions/register";
 import { ActionResult } from "../actions/types";
 import { trackEvent } from "../analytics";
-import { getDefaultAppState } from "../appState";
+import { getDefaultAppState, isEraserActive } from "../appState";
 import {
   copyToClipboard,
   parseClipboard,
@@ -69,6 +69,7 @@ import {
   TOUCH_CTX_MENU_TIMEOUT,
   URL_HASH_KEYS,
   URL_QUERY_KEYS,
+  VERTICAL_ALIGN,
   ZOOM_STEP,
 } from "../constants";
 import { loadFromBlob } from "../data";
@@ -115,11 +116,7 @@ import {
   updateBoundElements,
 } from "../element/binding";
 import { LinearElementEditor } from "../element/linearElementEditor";
-import {
-  bumpVersion,
-  mutateElement,
-  newElementWith,
-} from "../element/mutateElement";
+import { mutateElement, newElementWith } from "../element/mutateElement";
 import { deepCopyElement, newFreeDrawElement } from "../element/newElement";
 import {
   hasBoundTextElement,
@@ -130,6 +127,7 @@ import {
   isInitializedImageElement,
   isLinearElement,
   isLinearElementType,
+  isTextBindableContainer,
 } from "../element/typeChecks";
 import {
   ExcalidrawBindableElement,
@@ -143,6 +141,7 @@ import {
   ExcalidrawImageElement,
   FileId,
   NonDeletedExcalidrawElement,
+  ExcalidrawTextContainer,
 } from "../element/types";
 import { getCenter, getDistance } from "../gesture";
 import {
@@ -163,13 +162,14 @@ import {
   shouldRotateWithDiscreteAngle,
   isArrowKey,
   KEYS,
+  isAndroid,
 } from "../keys";
 import { distance2d, getGridPoint, isPathALoop } from "../math";
 import { renderScene } from "../renderer";
 import { invalidateShapeForElement } from "../renderer/renderElement";
 import {
   calculateScrollCenter,
-  getElementContainingPosition,
+  getTextBindableContainerAtPosition,
   getElementsAtPosition,
   getElementsWithinSelection,
   getNormalizedZoom,
@@ -212,7 +212,9 @@ import {
   tupleToCoors,
   viewportCoordsToSceneCoords,
   withBatchedUpdates,
+  wrapEvent,
   withBatchedUpdatesThrottled,
+  setEraserCursor,
 } from "../utils";
 import ContextMenu, { ContextMenuOption } from "./ContextMenu";
 import LayerUI from "./LayerUI";
@@ -239,7 +241,7 @@ import {
   bindTextToShapeAfterDuplication,
   getApproxMinLineHeight,
   getApproxMinLineWidth,
-  getBoundTextElementId,
+  getBoundTextElement,
 } from "../element/textElement";
 import { isHittingElementNotConsideringBoundingBox } from "../element/collision";
 import {
@@ -313,6 +315,7 @@ class App extends React.Component<AppProps, AppState> {
   lastPointerDown: React.PointerEvent<HTMLCanvasElement> | null = null;
   lastPointerUp: React.PointerEvent<HTMLElement> | PointerEvent | null = null;
   contextMenuOpen: boolean = false;
+  lastScenePointer: { x: number; y: number } | null = null;
 
   constructor(props: AppProps) {
     super(props);
@@ -416,7 +419,7 @@ class App extends React.Component<AppProps, AppState> {
           ref={this.handleCanvasRef}
           onContextMenu={this.handleCanvasContextMenu}
           onPointerMove={this.handleCanvasPointerMove}
-          onPointerUp={this.removePointer}
+          onPointerUp={this.handleCanvasPointerUp}
           onPointerCancel={this.removePointer}
           onTouchMove={this.handleTouchMove}
           onPointerDown={this.handleCanvasPointerDown}
@@ -439,7 +442,7 @@ class App extends React.Component<AppProps, AppState> {
         onPointerDown={this.handleCanvasPointerDown}
         onDoubleClick={this.handleCanvasDoubleClick}
         onPointerMove={this.handleCanvasPointerMove}
-        onPointerUp={this.removePointer}
+        onPointerUp={this.handleCanvasPointerUp}
         onPointerCancel={this.removePointer}
         onTouchMove={this.handleTouchMove}
       >
@@ -525,6 +528,7 @@ class App extends React.Component<AppProps, AppState> {
                 element={selectedElement[0]}
                 appState={this.state}
                 setAppState={this.setAppState}
+                onLinkOpen={this.props.onLinkOpen}
               />
             )}
             {this.state.showStats && (
@@ -1042,6 +1046,15 @@ class App extends React.Component<AppProps, AppState> {
   }
 
   componentDidUpdate(prevProps: AppProps, prevState: AppState) {
+    if (
+      Object.keys(this.state.selectedElementIds).length &&
+      isEraserActive(this.state)
+    ) {
+      this.setState({ elementType: "selection" });
+    }
+    if (prevState.theme !== this.state.theme) {
+      setEraserCursor(this.canvas, this.state.theme);
+    }
     // Hide hyperlink popup if shown when element type is not selection
     if (
       prevState.elementType === "selection" &&
@@ -1274,7 +1287,10 @@ class App extends React.Component<AppProps, AppState> {
 
   private onTapStart = (event: TouchEvent) => {
     // fix for Apple Pencil Scribble
-    event.preventDefault();
+    // On Android, preventing the event would disable contextMenu on tap-hold
+    if (!isAndroid) {
+      event.preventDefault();
+    }
 
     if (!didTapTwice) {
       didTapTwice = true;
@@ -1297,6 +1313,9 @@ class App extends React.Component<AppProps, AppState> {
       didTapTwice = false;
       clearTimeout(tappedTwiceTimer);
     }
+    if (isAndroid) {
+      event.preventDefault();
+    }
 
     if (event.touches.length === 2) {
       this.setState({
@@ -1306,11 +1325,14 @@ class App extends React.Component<AppProps, AppState> {
   };
 
   private onTapEnd = (event: TouchEvent) => {
+    this.resetContextMenuTimer();
     if (event.touches.length > 0) {
       this.setState({
         previousSelectedElementIds: {},
         selectedElementIds: this.state.previousSelectedElementIds,
       });
+    } else {
+      gesture.pointers.clear();
     }
   };
 
@@ -1523,20 +1545,8 @@ class App extends React.Component<AppProps, AppState> {
   };
 
   removePointer = (event: React.PointerEvent<HTMLElement> | PointerEvent) => {
-    this.lastPointerUp = event;
-
-    if (
-      this.hitLinkElement &&
-      !this.state.selectedElementIds[this.hitLinkElement.id]
-    ) {
-      this.redirectToLink();
-    }
-
-    // remove touch handler for context menu on touch devices
-    if (event.pointerType === "touch" && touchTimeout) {
-      clearTimeout(touchTimeout);
-      touchTimeout = 0;
-      invalidateContextMenu = false;
+    if (touchTimeout) {
+      this.resetContextMenuTimer();
     }
 
     gesture.pointers.delete(event.pointerId);
@@ -1620,9 +1630,6 @@ class App extends React.Component<AppProps, AppState> {
 
       this.files = { ...this.files, ...Object.fromEntries(filesMap) };
 
-      // bump versions for elements that reference added files so that
-      // we/host apps can detect the change, and invalidate the image & shape
-      // cache
       this.scene.getElements().forEach((element) => {
         if (
           isInitializedImageElement(element) &&
@@ -1630,7 +1637,6 @@ class App extends React.Component<AppProps, AppState> {
         ) {
           this.imageCache.delete(element.fileId);
           invalidateShapeForElement(element);
-          bumpVersion(element);
         }
       });
       this.scene.informMutation();
@@ -1871,7 +1877,7 @@ class App extends React.Component<AppProps, AppState> {
       } else if (this.state.elementType === "selection") {
         resetCursor(this.canvas);
       } else {
-        setCursorForShape(this.canvas, this.state.elementType);
+        setCursorForShape(this.canvas, this.state);
         this.setState({
           selectedElementIds: {},
           selectedGroupIds: {},
@@ -1897,7 +1903,7 @@ class App extends React.Component<AppProps, AppState> {
 
   private selectShapeTool(elementType: AppState["elementType"]) {
     if (!isHoldingSpace) {
-      setCursorForShape(this.canvas, elementType);
+      setCursorForShape(this.canvas, this.state);
     }
     if (isToolIcon(document.activeElement)) {
       this.focusContainer();
@@ -2041,7 +2047,7 @@ class App extends React.Component<AppProps, AppState> {
           editingElement: null,
         });
         if (this.state.elementLocked) {
-          setCursorForShape(this.canvas, this.state.elementType);
+          setCursorForShape(this.canvas, this.state);
         }
 
         this.focusContainer();
@@ -2164,28 +2170,40 @@ class App extends React.Component<AppProps, AppState> {
         window.devicePixelRatio,
       );
 
-    // bind to container when shouldBind is true or
-    // clicked on center of container
-    const container =
-      shouldBind || parentCenterPosition
-        ? getElementContainingPosition(
-            this.scene.getElements().filter((ele) => !isTextElement(ele)),
-            sceneX,
-            sceneY,
-          )
-        : null;
+    let existingTextElement: NonDeleted<ExcalidrawTextElement> | null = null;
+    let container: ExcalidrawTextContainer | null = null;
 
-    let existingTextElement = this.getTextElementAtPosition(sceneX, sceneY);
+    const selectedElements = getSelectedElements(
+      this.scene.getElements(),
+      this.state,
+    );
 
-    // consider bounded text element if container present
-    if (container) {
-      const boundTextElementId = getBoundTextElementId(container);
-      if (boundTextElementId) {
-        existingTextElement = this.scene.getElement(
-          boundTextElementId,
-        ) as ExcalidrawTextElement;
+    if (selectedElements.length === 1) {
+      if (isTextElement(selectedElements[0])) {
+        existingTextElement = selectedElements[0];
+      } else if (isTextBindableContainer(selectedElements[0])) {
+        container = selectedElements[0];
+        existingTextElement = getBoundTextElement(container);
       }
     }
+
+    existingTextElement =
+      existingTextElement ?? this.getTextElementAtPosition(sceneX, sceneY);
+
+    // bind to container when shouldBind is true or
+    // clicked on center of container
+    if (
+      !container &&
+      !existingTextElement &&
+      (shouldBind || parentCenterPosition)
+    ) {
+      container = getTextBindableContainerAtPosition(
+        this.scene.getElements().filter((ele) => !isTextElement(ele)),
+        sceneX,
+        sceneY,
+      );
+    }
+
     if (!existingTextElement && container) {
       const fontString = {
         fontSize: this.state.currentItemFontSize,
@@ -2233,7 +2251,7 @@ class App extends React.Component<AppProps, AppState> {
             ? "center"
             : this.state.currentItemTextAlign,
           verticalAlign: parentCenterPosition
-            ? "middle"
+            ? VERTICAL_ALIGN.MIDDLE
             : DEFAULT_VERTICAL_ALIGN,
           containerId: container?.id ?? undefined,
           groupIds: container?.groupIds ?? [],
@@ -2241,19 +2259,13 @@ class App extends React.Component<AppProps, AppState> {
 
     this.setState({ editingElement: element });
 
-    if (existingTextElement) {
-      // if text element is no longer centered to a container, reset
-      // verticalAlign to default because it's currently internal-only
-      if (!parentCenterPosition || element.textAlign !== "center") {
-        mutateElement(element, { verticalAlign: DEFAULT_VERTICAL_ALIGN });
-      }
-    } else {
+    if (!existingTextElement) {
       this.scene.replaceAllElements([
         ...this.scene.getElementsIncludingDeleted(),
         element,
       ]);
 
-      // case: creating new text not centered to parent elemenent → offset Y
+      // case: creating new text not centered to parent element → offset Y
       // so that the text is centered to cursor position
       if (!parentCenterPosition) {
         mutateElement(element, {
@@ -2375,16 +2387,35 @@ class App extends React.Component<AppProps, AppState> {
       }
       return (
         element.link &&
-        isPointHittingLinkIcon(element, this.state, [
-          scenePointer.x,
-          scenePointer.y,
-        ]) &&
+        isPointHittingLinkIcon(
+          element,
+          this.state,
+          [scenePointer.x, scenePointer.y],
+          this.isMobile,
+        ) &&
         index <= hitElementIndex
       );
     });
   };
 
-  private redirectToLink = () => {
+  private redirectToLink = (
+    event: React.PointerEvent<HTMLCanvasElement>,
+    isTouchScreen: boolean,
+  ) => {
+    const draggedDistance = distance2d(
+      this.lastPointerDown!.clientX,
+      this.lastPointerDown!.clientY,
+      this.lastPointerUp!.clientX,
+      this.lastPointerUp!.clientY,
+    );
+    if (
+      !this.hitLinkElement ||
+      // For touch screen allow dragging threshold else strict check
+      (isTouchScreen && draggedDistance > DRAGGING_THRESHOLD) ||
+      (!isTouchScreen && draggedDistance !== 0)
+    ) {
+      return;
+    }
     const lastPointerDownCoords = viewportCoordsToSceneCoords(
       this.lastPointerDown!,
       this.state,
@@ -2393,25 +2424,34 @@ class App extends React.Component<AppProps, AppState> {
       this.hitLinkElement!,
       this.state,
       [lastPointerDownCoords.x, lastPointerDownCoords.y],
+      this.isMobile,
     );
     const lastPointerUpCoords = viewportCoordsToSceneCoords(
       this.lastPointerUp!,
       this.state,
     );
-    const LastPointerUpHittingLinkIcon = isPointHittingLinkIcon(
+    const lastPointerUpHittingLinkIcon = isPointHittingLinkIcon(
       this.hitLinkElement!,
       this.state,
       [lastPointerUpCoords.x, lastPointerUpCoords.y],
+      this.isMobile,
     );
-    if (lastPointerDownHittingLinkIcon && LastPointerUpHittingLinkIcon) {
-      const url = this.hitLinkElement?.link;
+    if (lastPointerDownHittingLinkIcon && lastPointerUpHittingLinkIcon) {
+      const url = this.hitLinkElement.link;
       if (url) {
-        const target = isLocalLink(url) ? "_self" : "_blank";
-        const newWindow = window.open(undefined, target);
-        // https://mathiasbynens.github.io/rel-noopener/
-        if (newWindow) {
-          newWindow.opener = null;
-          newWindow.location = normalizeLink(url);
+        let customEvent;
+        if (this.props.onLinkOpen) {
+          customEvent = wrapEvent(EVENT.EXCALIDRAW_LINK, event.nativeEvent);
+          this.props.onLinkOpen(this.hitLinkElement, customEvent);
+        }
+        if (!customEvent?.defaultPrevented) {
+          const target = isLocalLink(url) ? "_self" : "_blank";
+          const newWindow = window.open(undefined, target);
+          // https://mathiasbynens.github.io/rel-noopener/
+          if (newWindow) {
+            newWindow.opener = null;
+            newWindow.location = normalizeLink(url);
+          }
         }
       }
     }
@@ -2421,7 +2461,6 @@ class App extends React.Component<AppProps, AppState> {
     event: React.PointerEvent<HTMLCanvasElement>,
   ) => {
     this.savePointer(event.clientX, event.clientY, this.state.cursorButton);
-
     if (gesture.pointers.has(event.pointerId)) {
       gesture.pointers.set(event.pointerId, {
         x: event.clientX,
@@ -2490,7 +2529,7 @@ class App extends React.Component<AppProps, AppState> {
       if (isOverScrollBar) {
         resetCursor(this.canvas);
       } else {
-        setCursorForShape(this.canvas, this.state.elementType);
+        setCursorForShape(this.canvas, this.state);
       }
     }
 
@@ -2540,7 +2579,7 @@ class App extends React.Component<AppProps, AppState> {
       const { points, lastCommittedPoint } = multiElement;
       const lastPoint = points[points.length - 1];
 
-      setCursorForShape(this.canvas, this.state.elementType);
+      setCursorForShape(this.canvas, this.state);
 
       if (lastPoint === lastCommittedPoint) {
         // if we haven't yet created a temp point and we're beyond commit-zone
@@ -2595,7 +2634,8 @@ class App extends React.Component<AppProps, AppState> {
     if (
       hasDeselectedButton ||
       (this.state.elementType !== "selection" &&
-        this.state.elementType !== "text")
+        this.state.elementType !== "text" &&
+        this.state.elementType !== "eraser")
     ) {
       return;
     }
@@ -2653,7 +2693,9 @@ class App extends React.Component<AppProps, AppState> {
       scenePointer,
       hitElement,
     );
-
+    if (isEraserActive(this.state)) {
+      return;
+    }
     if (
       this.hitLinkElement &&
       !this.state.selectedElementIds[this.hitLinkElement.id]
@@ -2670,8 +2712,7 @@ class App extends React.Component<AppProps, AppState> {
         !this.state.showHyperlinkPopup
       ) {
         this.setState({ showHyperlinkPopup: "info" });
-      }
-      if (this.state.elementType === "text") {
+      } else if (this.state.elementType === "text") {
         setCursor(
           this.canvas,
           isTextElement(hitElement) ? CURSOR_TYPE.TEXT : CURSOR_TYPE.CROSSHAIR,
@@ -2712,6 +2753,80 @@ class App extends React.Component<AppProps, AppState> {
     }
   };
 
+  private handleEraser = (
+    event: PointerEvent,
+    pointerDownState: PointerDownState,
+    scenePointer: { x: number; y: number },
+  ) => {
+    const updateElementIds = (elements: ExcalidrawElement[]) => {
+      elements.forEach((element) => {
+        idsToUpdate.push(element.id);
+        if (event.altKey) {
+          if (pointerDownState.elementIdsToErase[element.id]) {
+            pointerDownState.elementIdsToErase[element.id] = false;
+          }
+        } else {
+          pointerDownState.elementIdsToErase[element.id] = true;
+        }
+      });
+    };
+
+    const idsToUpdate: Array<string> = [];
+
+    const distance = distance2d(
+      pointerDownState.lastCoords.x,
+      pointerDownState.lastCoords.y,
+      scenePointer.x,
+      scenePointer.y,
+    );
+    const threshold = 10 / this.state.zoom.value;
+    const point = { ...pointerDownState.lastCoords };
+    let samplingInterval = 0;
+    while (samplingInterval <= distance) {
+      const hitElements = this.getElementsAtPosition(point.x, point.y);
+      updateElementIds(hitElements);
+
+      // Exit since we reached current point
+      if (samplingInterval === distance) {
+        break;
+      }
+
+      // Calculate next point in the line at a distance of sampling interval
+      samplingInterval = Math.min(samplingInterval + threshold, distance);
+
+      const distanceRatio = samplingInterval / distance;
+      const nextX =
+        (1 - distanceRatio) * point.x + distanceRatio * scenePointer.x;
+      const nextY =
+        (1 - distanceRatio) * point.y + distanceRatio * scenePointer.y;
+      point.x = nextX;
+      point.y = nextY;
+    }
+
+    const elements = this.scene.getElements().map((ele) => {
+      const id =
+        isBoundToContainer(ele) && idsToUpdate.includes(ele.containerId)
+          ? ele.containerId
+          : ele.id;
+      if (idsToUpdate.includes(id)) {
+        if (event.altKey) {
+          if (pointerDownState.elementIdsToErase[id] === false) {
+            return newElementWith(ele, {
+              opacity: this.state.currentItemOpacity,
+            });
+          }
+        } else {
+          return newElementWith(ele, { opacity: 20 });
+        }
+      }
+      return ele;
+    });
+
+    this.scene.replaceAllElements(elements);
+
+    pointerDownState.lastCoords.x = scenePointer.x;
+    pointerDownState.lastCoords.y = scenePointer.y;
+  };
   // set touch moving for mobile context menu
   private handleTouchMove = (event: React.TouchEvent<HTMLCanvasElement>) => {
     invalidateContextMenu = true;
@@ -2744,6 +2859,7 @@ class App extends React.Component<AppProps, AppState> {
     if (isPanning) {
       return;
     }
+
     this.lastPointerDown = event;
     this.setState({
       lastPointerDownWith: event.pointerType,
@@ -2836,7 +2952,7 @@ class App extends React.Component<AppProps, AppState> {
         this.state.elementType,
         pointerDownState,
       );
-    } else {
+    } else if (this.state.elementType !== "eraser") {
       this.createGenericElementOnPointerDown(
         this.state.elementType,
         pointerDownState,
@@ -2866,6 +2982,36 @@ class App extends React.Component<AppProps, AppState> {
     }
   };
 
+  private handleCanvasPointerUp = (
+    event: React.PointerEvent<HTMLCanvasElement>,
+  ) => {
+    this.lastPointerUp = event;
+    const isTouchScreen = ["pen", "touch"].includes(event.pointerType);
+
+    if (isTouchScreen) {
+      const scenePointer = viewportCoordsToSceneCoords(
+        { clientX: event.clientX, clientY: event.clientY },
+        this.state,
+      );
+      const hitElement = this.getElementAtPosition(
+        scenePointer.x,
+        scenePointer.y,
+      );
+      this.hitLinkElement = this.getElementLinkAtPosition(
+        scenePointer,
+        hitElement,
+      );
+    }
+    if (
+      this.hitLinkElement &&
+      !this.state.selectedElementIds[this.hitLinkElement.id]
+    ) {
+      this.redirectToLink(event, isTouchScreen);
+    }
+
+    this.removePointer(event);
+  };
+
   private maybeOpenContextMenuAfterPointerDownOnTouchDevices = (
     event: React.PointerEvent<HTMLCanvasElement>,
   ): void => {
@@ -2889,6 +3035,12 @@ class App extends React.Component<AppProps, AppState> {
         }, TOUCH_CTX_MENU_TIMEOUT);
       }
     }
+  };
+
+  private resetContextMenuTimer = () => {
+    clearTimeout(touchTimeout);
+    touchTimeout = 0;
+    invalidateContextMenu = false;
   };
 
   private maybeCleanupAfterMissingPointerUp(
@@ -2951,7 +3103,7 @@ class App extends React.Component<AppProps, AppState> {
         /*
          * Reenable next paste in case of disabled middle click paste for
          * any reason:
-         * - rigth click paste
+         * - right click paste
          * - empty clipboard
          */
         const enableNextPaste = () => {
@@ -2978,7 +3130,7 @@ class App extends React.Component<AppProps, AppState> {
           if (this.state.viewModeEnabled) {
             setCursor(this.canvas, CURSOR_TYPE.GRAB);
           } else {
-            setCursorForShape(this.canvas, this.state.elementType);
+            setCursorForShape(this.canvas, this.state);
           }
         }
         this.setState({
@@ -3075,6 +3227,7 @@ class App extends React.Component<AppProps, AppState> {
       boxSelection: {
         hasOccurred: false,
       },
+      elementIdsToErase: {},
     };
   }
 
@@ -3102,7 +3255,7 @@ class App extends React.Component<AppProps, AppState> {
 
     const onPointerUp = withBatchedUpdates(() => {
       isDraggingScrollBar = false;
-      setCursorForShape(this.canvas, this.state.elementType);
+      setCursorForShape(this.canvas, this.state);
       lastPointerUp = null;
       this.setState({
         cursorButton: "up",
@@ -3219,10 +3372,12 @@ class App extends React.Component<AppProps, AppState> {
         if (pointerDownState.hit.element) {
           // Early return if pointer is hitting link icon
           if (
-            isPointHittingLinkIcon(pointerDownState.hit.element, this.state, [
-              pointerDownState.origin.x,
-              pointerDownState.origin.y,
-            ])
+            isPointHittingLinkIcon(
+              pointerDownState.hit.element,
+              this.state,
+              [pointerDownState.origin.x, pointerDownState.origin.y],
+              this.isMobile,
+            )
           ) {
             return false;
           }
@@ -3661,7 +3816,6 @@ class App extends React.Component<AppProps, AppState> {
           ),
         );
       }
-
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
         return;
@@ -3672,6 +3826,12 @@ class App extends React.Component<AppProps, AppState> {
       }
 
       const pointerCoords = viewportCoordsToSceneCoords(event, this.state);
+
+      if (isEraserActive(this.state)) {
+        this.handleEraser(event, pointerDownState, pointerCoords);
+        return;
+      }
+
       const [gridX, gridY] = getGridPoint(
         pointerCoords.x,
         pointerCoords.y,
@@ -4024,7 +4184,6 @@ class App extends React.Component<AppProps, AppState> {
         isResizing,
         isRotating,
       } = this.state;
-
       this.setState({
         isResizing: false,
         isRotating: false,
@@ -4245,6 +4404,33 @@ class App extends React.Component<AppProps, AppState> {
       // Code below handles selection when element(s) weren't
       // drag or added to selection on pointer down phase.
       const hitElement = pointerDownState.hit.element;
+      if (isEraserActive(this.state)) {
+        const draggedDistance = distance2d(
+          this.lastPointerDown!.clientX,
+          this.lastPointerDown!.clientY,
+          this.lastPointerUp!.clientX,
+          this.lastPointerUp!.clientY,
+        );
+
+        if (draggedDistance === 0) {
+          const scenePointer = viewportCoordsToSceneCoords(
+            {
+              clientX: this.lastPointerUp!.clientX,
+              clientY: this.lastPointerUp!.clientY,
+            },
+            this.state,
+          );
+          const hitElement = this.getElementAtPosition(
+            scenePointer.x,
+            scenePointer.y,
+          );
+
+          pointerDownState.hit.element = hitElement;
+        }
+        this.eraseElements(pointerDownState);
+        return;
+      }
+
       if (
         hitElement &&
         !pointerDownState.drag.hasOccurred &&
@@ -4383,6 +4569,27 @@ class App extends React.Component<AppProps, AppState> {
       }
     });
   }
+
+  private eraseElements = (pointerDownState: PointerDownState) => {
+    const hitElement = pointerDownState.hit.element;
+    const elements = this.scene.getElements().map((ele) => {
+      if (pointerDownState.elementIdsToErase[ele.id]) {
+        return newElementWith(ele, { isDeleted: true });
+      } else if (hitElement && ele.id === hitElement.id) {
+        return newElementWith(ele, { isDeleted: true });
+      } else if (
+        isBoundToContainer(ele) &&
+        (pointerDownState.elementIdsToErase[ele.containerId] ||
+          (hitElement && ele.containerId === hitElement.id))
+      ) {
+        return newElementWith(ele, { isDeleted: true });
+      }
+      return ele;
+    });
+
+    this.history.resumeRecording();
+    this.scene.replaceAllElements(elements);
+  };
 
   private initializeImage = async ({
     imageFile,
@@ -4685,7 +4892,7 @@ class App extends React.Component<AppProps, AppState> {
       const width = height * (image.naturalWidth / image.naturalHeight);
 
       // add current imageElement width/height to account for previous centering
-      // of the placholder image
+      // of the placeholder image
       const x = imageElement.x + imageElement.width / 2 - width / 2;
       const y = imageElement.y + imageElement.height / 2 - height / 2;
 
@@ -4866,7 +5073,7 @@ class App extends React.Component<AppProps, AppState> {
 
   private handleAppOnDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     try {
-      const file = event.dataTransfer.files[0];
+      const file = event.dataTransfer.files.item(0);
 
       if (isSupportedImageFile(file)) {
         // first attempt to decode scene from the image if it's embedded
@@ -4942,7 +5149,7 @@ class App extends React.Component<AppProps, AppState> {
       return;
     }
 
-    const file = event.dataTransfer?.files[0];
+    const file = event.dataTransfer?.files.item(0);
     if (
       file?.type === MIME_TYPES.excalidrawlib ||
       file?.name?.endsWith(".excalidrawlib")
@@ -4958,7 +5165,7 @@ class App extends React.Component<AppProps, AppState> {
           this.setState({ isLoading: false, errorMessage: error.message }),
         );
       // default: assume an Excalidraw file regardless of extension/MimeType
-    } else {
+    } else if (file) {
       this.setState({ isLoading: true });
       if (nativeFileSystemSupported) {
         try {
@@ -4996,6 +5203,16 @@ class App extends React.Component<AppProps, AppState> {
     event: React.PointerEvent<HTMLCanvasElement>,
   ) => {
     event.preventDefault();
+
+    if (
+      (event.nativeEvent.pointerType === "touch" ||
+        (event.nativeEvent.pointerType === "pen" &&
+          // always allow if user uses a pen secondary button
+          event.button !== POINTER_BUTTON.SECONDARY)) &&
+      this.state.elementType !== "selection"
+    ) {
+      return;
+    }
 
     const { x, y } = viewportCoordsToSceneCoords(event, this.state);
     const element = this.getElementAtPosition(x, y, { preferSelected: true });
@@ -5370,7 +5587,7 @@ class App extends React.Component<AppProps, AppState> {
     canvas: HTMLCanvasElement | null,
     scale: number,
   ) {
-    const elementClickedInside = getElementContainingPosition(
+    const elementClickedInside = getTextBindableContainerAtPosition(
       this.scene
         .getElementsIncludingDeleted()
         .filter((element) => !isTextElement(element)),

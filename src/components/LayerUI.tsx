@@ -238,7 +238,7 @@ const LayerUI = ({
         className={CLASSES.SHAPE_ACTIONS_MENU}
         padding={2}
         style={{
-          // we want to make sure this doesn't overflow so substracting 200
+          // we want to make sure this doesn't overflow so subtracting 200
           // which is approximately height of zoom footer and top left menu items with some buffer
           // if active file name is displayed, subtracting 248 to account for its height
           maxHeight: `${appState.height - (appState.fileHandle ? 248 : 200)}px`,
@@ -343,6 +343,7 @@ const LayerUI = ({
                       {heading}
                       <Stack.Row gap={1}>
                         <ShapesSwitcher
+                          appState={appState}
                           canvas={canvas}
                           elementType={appState.elementType}
                           setAppState={setAppState}
@@ -428,6 +429,14 @@ const LayerUI = ({
                   {actionManager.renderAction("redo", { size: "small" })}
                 </div>
               )}
+              <div
+                className={clsx("eraser-buttons zen-mode-transition", {
+                  "layer-ui__wrapper__footer-left--transition-left":
+                    zenModeEnabled,
+                })}
+              >
+                {actionManager.renderAction("eraser", { size: "small" })}
+              </div>
             </Section>
           </Stack.Col>
         </div>
